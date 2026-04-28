@@ -112,7 +112,7 @@
     {
       "path": "_internal/base_library.zip",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/test/_internal/base_library.zip",
-      "sha256": "b8e48ec5ab60c5af069416f4bb0a81430c9237e6a7d8d46ac57cb14990bcb0a8",
+      "sha256": "112b4f2d8a2ea1cf3971622f579f744ff14d6219024925bf2a9d86e1e7ca1778",
       "size": 1388164
     },
     {
@@ -1613,7 +1613,7 @@
     {
       "path": "GMT-N.exe",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/test/GMT-N.exe",
-      "sha256": "a3c46f7586cc77fd900dce187ed023d7b5ff46661898a830e07f5dd86332d3d4",
+      "sha256": "164eebbca0d1b76b50b47723d99f09849b2bf48f9652aa73f4392859115ce41f",
       "size": 8559962
     },
     {
@@ -1625,8 +1625,8 @@
     {
       "path": "updater.exe",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/test/updater.exe",
-      "sha256": "747a291ce07e4b8612b8ed8bd5cb6a9a9325c6eca433e45e6c9564b29e66f599",
-      "size": 8521488
+      "sha256": "8947fbc3a21f2afde47bbe729ca1273ccc6008b7c5cae6020006afc3b7c7b505",
+      "size": 8522040
     }
   ],
   "delete": [],
