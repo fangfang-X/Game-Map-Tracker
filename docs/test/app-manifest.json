@@ -1,6 +1,6 @@
 {
   "version": "0.1.3",
-  "notes": "发现了gitee不支持大文件供未登录用户下载导致出现部分大文件被更新失败的情况，在此做附件测试",
+  "notes": "测试多链接",
   "app_status": "normal",
   "app_status_message": "",
   "app_notice_force_prompt": false,
@@ -115,7 +115,7 @@
     {
       "path": "_internal/base_library.zip",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/test/_internal/base_library.zip",
-      "sha256": "b1f4ecbaaddb495f9ebe91554416a83ae8c4af7fdada09380a88b82ac9271c64",
+      "sha256": "330c4fafa0b6d5641b1c7edb2ab9542c16bdc54d01d461ce1c97935fc8781f63",
       "size": 1388164
     },
     {
@@ -1616,8 +1616,8 @@
     {
       "path": "GMT-N.exe",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/test/GMT-N.exe",
-      "sha256": "01117a9ee5fde66fff77b52551368e6c76c7710e9b7ba92b5fa84c7e2fd6d73c",
-      "size": 8586815
+      "sha256": "6c4c92ca74730401e63bd1ee8528481e9f90e21b51af3c2c40275ec1ab78c2ac",
+      "size": 8587895
     },
     {
       "path": "README.md",
@@ -1626,28 +1626,28 @@
       "size": 2992
     },
     {
-      "path": "tools/json_txt_converter.exe",
-      "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/test/tools/json_txt_converter.exe",
-      "sha256": "84f971379a8531a395330be319147abbfc90f40b779aeb3150e937c2e4b35382",
-      "size": 11502559
-    },
-    {
       "path": "updater.exe",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/test/updater.exe",
-      "sha256": "98caf503726f96ca894d797d3f368b0c93c34f9af090a9e28032ec51e07187f6",
-      "size": 8522422
+      "sha256": "44b9a594f3711749fd3378670c164e9ac9b8aabfc1e09fd4e581f7d867700394",
+      "size": 8521301
     }
   ],
   "delete": [],
   "runtime_config": {
     "QUARK_DOWNLOAD_URL": "https://pan.quark.cn/s/cf8e31fecd58?pwd=48wL",
-    "ROUTE_RESOURCE_URL": "https://www.kdocs.cn/wo/sl/v11cdiqU",
+    "ROUTE_RESOURCE_URL": "https://www.mapforge.top/",
     "DOCUMENTATION_URL": "https://www.kdocs.cn/l/cctolH56prWP",
     "FEEDBACK_BILIBILI_URL": "https://space.bilibili.com/11695114",
     "FEEDBACK_QQ_GROUP": "311609019",
-    "APP_UPDATE_MANIFEST_URLS": [
-      "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/test/app-manifest.json",
-      "https://greenjiao.github.io/Game-Map-Tracker/test/app-manifest.json"
+    "ROUTE_RESOURCE_LINKS": [
+      {
+        "name": "地图工坊",
+        "url": "https://www.mapforge.top/"
+      },
+      {
+        "name": "金山文档路线(需txt和json互转)",
+        "url": "https://www.kdocs.cn/wo/sl/v11cdiqU"
+      }
     ]
   }
 }
