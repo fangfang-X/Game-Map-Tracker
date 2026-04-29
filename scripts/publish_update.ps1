@@ -9,6 +9,8 @@
     [string]$AppStatus = "",
     [string]$AppStatusMessage = "",
     [switch]$AppNoticeForcePrompt,
+    [string]$MinSupportedVersion = "",
+    [string]$MinSupportedVersionMessage = "",
     [string]$BaseUrl = "",
     [string]$CommitMessage = "",
     [switch]$SkipBuild,
@@ -209,6 +211,23 @@ if ($AppStatus -ne "notice") {
     $UseAppNoticeForcePrompt = $false
 }
 
+if (-not $MinSupportedVersion.Trim()) {
+    if (Read-YesNo "是否设置最低可用版本（低于此版本强制更新）？" $false) {
+        $MinSupportedVersion = Read-RequiredText "请输入最低可用版本号，例如 0.1.2"
+    } else {
+        $MinSupportedVersion = ""
+    }
+} else {
+    $MinSupportedVersion = $MinSupportedVersion.Trim()
+}
+
+if ($MinSupportedVersion -and -not $MinSupportedVersionMessage.Trim()) {
+    $inputMinVersionMessage = (Read-Host "请输入低版本强制更新说明，直接回车使用默认文案").Trim()
+    $MinSupportedVersionMessage = $inputMinVersionMessage
+} else {
+    $MinSupportedVersionMessage = $MinSupportedVersionMessage.Trim()
+}
+
 $ShouldBuild = $true
 if ($PSBoundParameters.ContainsKey("SkipBuild")) {
     $ShouldBuild = -not [bool]$SkipBuild
@@ -246,6 +265,12 @@ if ($AppStatusMessage) {
     Write-Host "  状态说明：$AppStatusMessage"
 }
 Write-Host "  公告每次弹出：$UseAppNoticeForcePrompt"
+if ($MinSupportedVersion) {
+    Write-Host "  最低可用版本：$MinSupportedVersion"
+    if ($MinSupportedVersionMessage) {
+        Write-Host "  低版本更新说明：$MinSupportedVersionMessage"
+    }
+}
 Write-Host "  重新打包：$ShouldBuild"
 Write-Host "  提交推送：$ShouldCommitAndPush"
 Write-Host "  发布通道：$Channel"
@@ -256,7 +281,7 @@ Write-Host ""
 if ($ShouldBuild) {
     Write-Host "开始打包..."
     Invoke-CheckedCommand `
-        -Command { & powershell -ExecutionPolicy Bypass -File "scripts/build_windows.ps1" -Clean } `
+        -Command { & powershell -ExecutionPolicy Bypass -File "scripts/build_windows.ps1" -Clean -Channel $Channel } `
         -ErrorMessage "打包失败"
 } elseif (-not (Test-Path "dist\GMT-N")) {
     throw "已选择跳过打包，但 dist\GMT-N 不存在。"
@@ -274,6 +299,10 @@ Write-Host "重建 $ReleasePathspec..."
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $UpdateDir
 New-Item -ItemType Directory -Force $UpdateDir | Out-Null
 Copy-Item (Join-Path $DistDir "*") $UpdateDir -Recurse -Force
+$PublishedConverter = Join-Path $UpdateDir "tools\json_txt_converter.exe"
+if (Test-Path $PublishedConverter) {
+    Remove-Item -Force $PublishedConverter
+}
 
 Write-Host "生成更新清单..."
 $manifestArgs = @(
@@ -290,6 +319,12 @@ if ($AppStatusMessage) {
 }
 if ($UseAppNoticeForcePrompt) {
     $manifestArgs += "--app-notice-force-prompt"
+}
+if ($MinSupportedVersion) {
+    $manifestArgs += @("--min-supported-version", $MinSupportedVersion)
+}
+if ($MinSupportedVersion -and $MinSupportedVersionMessage) {
+    $manifestArgs += @("--min-supported-version-message", $MinSupportedVersionMessage)
 }
 if ($UsePromptUpdate) {
     $manifestArgs += "--prompt-update"

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -15,7 +14,12 @@ from PySide6.QtWidgets import (
 
 from ..design import strings, tokens
 from ..widgets.factory import make_label, make_scroll_area
+from ..widgets.route_widgets import ElidedCheckBox
 from . import StyledDialogBase, center_dialog
+
+_ROUTE_NAME_MIN_WIDTH = 180
+_ROUTE_NAME_MAX_WIDTH = 260
+_POSITION_SPIN_MAX_WIDTH = 92
 
 
 class InsertPointDialog(StyledDialogBase):
@@ -41,20 +45,23 @@ class InsertPointDialog(StyledDialogBase):
 
         list_host = QWidget()
         list_host.setObjectName("AnnotationPanelInner")
+        list_host.setMinimumWidth(0)
         list_layout = QVBoxLayout(list_host)
         list_layout.setContentsMargins(2, 2, 2, 2)
         list_layout.setSpacing(6)
 
-        single = len(self._candidates) == 1
         for cand in self._candidates:
             row_widget = QWidget()
             row_widget.setObjectName("InsertPointRouteRow")
+            row_widget.setMinimumWidth(0)
             row_layout = QHBoxLayout(row_widget)
             row_layout.setContentsMargins(0, 0, 0, 0)
             row_layout.setSpacing(8)
 
-            checkbox = QCheckBox(cand.get("display_label", ""))
+            checkbox = ElidedCheckBox(str(cand.get("display_label", "")))
             checkbox.setChecked(True)
+            checkbox.setMinimumWidth(_ROUTE_NAME_MIN_WIDTH)
+            checkbox.setMaximumWidth(_ROUTE_NAME_MAX_WIDTH)
             checkbox.setStyleSheet(f"color: {tokens.FG}; font-size: 12px;")
             row_layout.addWidget(checkbox, stretch=1)
 
@@ -63,21 +70,20 @@ class InsertPointDialog(StyledDialogBase):
             # UI 1-based: 第 N 位,N ∈ [1, total+1]
             suggested_ui = max(1, min(total + 1, suggested + 1))
 
-            spin: QSpinBox | None = None
-            if single:
-                pos_lbl = make_label(strings.INSERT_POINT_POSITION_LABEL, object_name="DimLabel")
-                row_layout.addWidget(pos_lbl)
-                spin = QSpinBox()
-                spin.setRange(1, total + 1)
-                spin.setValue(suggested_ui)
-                spin.setSuffix(f" / {total + 1}")
-                row_layout.addWidget(spin)
-            else:
-                suggest_lbl = make_label(
-                    strings.INSERT_POINT_SUGGEST_FMT.format(pos=suggested_ui, total=total + 1),
-                    object_name="DimLabel",
-                )
-                row_layout.addWidget(suggest_lbl)
+            suggest_lbl = make_label(
+                strings.INSERT_POINT_SUGGEST_FMT.format(pos=suggested_ui, total=total + 1),
+                object_name="DimLabel",
+            )
+            row_layout.addWidget(suggest_lbl)
+
+            pos_lbl = make_label(strings.INSERT_POINT_POSITION_LABEL, object_name="DimLabel")
+            row_layout.addWidget(pos_lbl)
+            spin = QSpinBox()
+            spin.setRange(1, total + 1)
+            spin.setValue(suggested_ui)
+            spin.setSuffix(f" / {total + 1}")
+            spin.setMaximumWidth(_POSITION_SPIN_MAX_WIDTH)
+            row_layout.addWidget(spin)
 
             list_layout.addWidget(row_widget)
             self._rows.append({

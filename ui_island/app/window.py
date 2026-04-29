@@ -31,6 +31,7 @@ from ..services.app_updater import (
     AppUpdateCheckResult,
     AppUpdateInstallResult,
     DEFAULT_APP_STATUS_MESSAGE,
+    DEFAULT_MIN_SUPPORTED_VERSION_MESSAGE,
     app_notice_ack_key,
     check_app_update,
     cleanup_staging,
@@ -209,6 +210,7 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
         self._annotation_refresh_toast = None
         self._startup_update_check_running = False
         self._startup_update_install_running = False
+        self._startup_force_update_required = False
         self._startup_update_progress_toast = None
 
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
@@ -224,6 +226,7 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
         self.installEventFilter(self)
         self.window_mode_controller.restore_or_center()
         self.window_mode_controller.enter_mode(WindowMode.PAUSED)
+        self._sync_route_point_drag_enabled()
         self._apply_configured_window_opacity()
         QTimer.singleShot(0, self._paint_default_map)
 
@@ -235,6 +238,7 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
         self._frame_ready.connect(self._on_frame)
         self.map_view.add_point_requested.connect(self.map_interaction_controller.on_add_point_requested)
         self.map_view.add_annotation_requested.connect(self.map_interaction_controller.add_annotation_point)
+        self.map_view.add_annotated_point_requested.connect(self.map_interaction_controller.add_annotated_point_to_routes)
         self.map_view.delete_point_requested.connect(self.map_interaction_controller.on_delete_point_requested)
         self.map_view.mark_point_visited_requested.connect(self.map_interaction_controller.mark_point_visited)
         self.map_view.change_point_annotation_requested.connect(self.map_interaction_controller.change_point_annotation)
@@ -245,7 +249,12 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
         self.map_view.delete_annotation_requested.connect(self.map_interaction_controller.delete_map_annotation)
         self.map_view.guide_hint_changed.connect(self._on_route_guide_hint_changed)
         self.map_view.drawing_point_requested.connect(self.route_panel_controller.append_drawing_point)
+        self.map_view.drawing_point_move_requested.connect(self.route_panel_controller.move_drawing_point)
+        self.map_view.drawing_point_move_finished.connect(self.route_panel_controller.finish_move_drawing_point)
         self.map_view.drawing_undo_requested.connect(self.route_panel_controller.undo_route_drawing)
+        self.map_view.route_point_move_requested.connect(self.map_interaction_controller.move_route_point_preview)
+        self.map_view.route_point_move_finished.connect(self.map_interaction_controller.finish_move_route_point)
+        self.map_view.route_point_move_undo_requested.connect(self.map_interaction_controller.undo_route_point_move)
         self.annotation_toggle_btn.clicked.connect(lambda _checked=False: self._toggle_annotation_panel())
         self.annotation_panel.set_group_expanded_state(
             self.annotation_group_expanded,
@@ -282,7 +291,11 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
         self._startup_update_check_running = False
         if not isinstance(result, AppUpdateCheckResult):
             return
-        if self._handle_startup_app_status(result):
+        if self._handle_startup_app_disabled(result):
+            return
+        if self._handle_startup_min_supported_update(result):
+            return
+        if self._handle_startup_app_notice(result):
             return
         last_prompted = str(getattr(config, "APP_UPDATE_LAST_PROMPTED_VERSION", "") or "")
         if not should_show_startup_update_prompt(result, last_prompted):
@@ -315,28 +328,77 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
             return
         self._remember_startup_update_prompt(result.latest_version)
 
-    def _handle_startup_app_status(self, result: AppUpdateCheckResult) -> bool:
+    def _handle_startup_app_disabled(self, result: AppUpdateCheckResult) -> bool:
         status = str(getattr(result, "app_status", "") or "").strip().lower()
-        if status not in {APP_STATUS_NOTICE, APP_STATUS_DISABLED}:
+        if status != APP_STATUS_DISABLED:
             return False
         message = str(getattr(result, "app_status_message", "") or "").strip() or DEFAULT_APP_STATUS_MESSAGE
-        if status == APP_STATUS_NOTICE:
-            force_notice = bool(getattr(result, "app_notice_force_prompt", False))
-            last_ack_key = str(getattr(config, "APP_NOTICE_LAST_ACK_KEY", "") or "")
-            if not should_show_app_notice(
-                status,
-                message,
-                force_prompt=force_notice,
-                last_ack_key=last_ack_key,
-            ):
-                return False
-            styled_info(self, "公告", message)
-            self._remember_startup_notice_ack(message)
+        styled_info(self, "程序已停用", message)
+        QApplication.quit()
+        return True
+
+    def _handle_startup_min_supported_update(self, result: AppUpdateCheckResult) -> bool:
+        if not bool(getattr(result, "requires_min_supported_update", False)):
             return False
-        if status == APP_STATUS_DISABLED:
-            styled_info(self, "程序已停用", message)
+
+        if not result.requires_restart or not result.changed_files:
+            styled_info(
+                self,
+                "版本过低，需要更新",
+                self._format_min_supported_update_message(result)
+                + "\n\n当前更新包无法升级程序版本，请重新联网检查或下载最新版。",
+            )
             QApplication.quit()
             return True
+
+        confirmed = styled_confirm(
+            self,
+            "版本过低，需要更新",
+            self._format_min_supported_update_message(result)
+            + "\n\n必须更新到支持版本后才能继续使用。",
+            confirm_text="下载并重启更新",
+            cancel_text="退出",
+        )
+        if not confirmed:
+            QApplication.quit()
+            return True
+
+        self._startup_force_update_required = True
+        self._start_startup_restart_update(result)
+        return True
+
+    @staticmethod
+    def _format_min_supported_update_message(result: AppUpdateCheckResult) -> str:
+        message = str(getattr(result, "min_supported_version_message", "") or "").strip()
+        if not message:
+            message = DEFAULT_MIN_SUPPORTED_VERSION_MESSAGE
+        min_version = str(getattr(result, "min_supported_version", "") or "").strip() or "未知"
+        latest_version = str(getattr(result, "latest_version", "") or "").strip() or "未知"
+        current_version = str(getattr(result, "current_version", "") or "").strip() or "未知"
+        return (
+            f"当前版本：{current_version}\n"
+            f"最低可用版本：{min_version}\n"
+            f"最新版本：{latest_version}\n\n"
+            f"{message}"
+        )
+
+    def _handle_startup_app_notice(self, result: AppUpdateCheckResult) -> bool:
+        status = str(getattr(result, "app_status", "") or "").strip().lower()
+        if status != APP_STATUS_NOTICE:
+            return False
+        message = str(getattr(result, "app_status_message", "") or "").strip() or DEFAULT_APP_STATUS_MESSAGE
+        force_notice = bool(getattr(result, "app_notice_force_prompt", False))
+        last_ack_key = str(getattr(config, "APP_NOTICE_LAST_ACK_KEY", "") or "")
+        if not should_show_app_notice(
+            status,
+            message,
+            force_prompt=force_notice,
+            last_ack_key=last_ack_key,
+        ):
+            return False
+        styled_info(self, "公告", message)
+        self._remember_startup_notice_ack(message)
+        return False
 
     @staticmethod
     def _remember_startup_update_prompt(version: str) -> None:
@@ -445,12 +507,15 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
     def _on_startup_update_install_finished(self, result: object) -> None:
         self._startup_update_install_running = False
         self._clear_startup_update_progress()
+        force_quit = bool(getattr(self, "_startup_force_update_required", False))
         if not isinstance(result, AppUpdateInstallResult):
             styled_info(
                 self,
                 strings.UPDATE_ERROR_INSTALL_TITLE,
                 strings.with_update_error_hint(strings.UPDATE_ERROR_INSTALL_UNKNOWN),
             )
+            if force_quit:
+                QApplication.quit()
             return
         if not result.ok:
             styled_info(
@@ -458,6 +523,8 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
                 strings.UPDATE_ERROR_INSTALL_TITLE,
                 strings.with_update_error_hint(result.error or strings.UPDATE_ERROR_UNKNOWN),
             )
+            if force_quit:
+                QApplication.quit()
             return
 
         if result.requires_restart:
@@ -474,6 +541,8 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
             "更新完成",
             f"资源已更新到 {result.version}，并已保留你的个人配置。{conflict_msg}",
         )
+        if force_quit:
+            QApplication.quit()
 
     def _refresh_updated_resources(self) -> None:
         try:
@@ -869,6 +938,13 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
     def _can_toggle_lock(self) -> bool:
         return self._mode in _STABLE_FAMILY
 
+    def _sync_route_point_drag_enabled(self) -> None:
+        mode_enum = self._mode.__class__
+        enabled = self._mode in (mode_enum.PAUSED, mode_enum.MAXIMIZED) or (
+            self._mode in _STABLE_FAMILY and not self._locked
+        )
+        self.map_view.set_route_point_drag_enabled(enabled)
+
     def _set_locked_state(self, locked: bool) -> None:
         self._locked = locked
         self.lock_btn.setChecked(self._locked)
@@ -880,6 +956,7 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
         else:
             set_click_through(self, False)
         self._apply_configured_window_opacity()
+        self._sync_route_point_drag_enabled()
 
     def _apply_configured_window_opacity(self) -> None:
         if self._locked:

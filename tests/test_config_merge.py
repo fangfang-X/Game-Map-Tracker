@@ -209,6 +209,7 @@ class ConfigMergeTests(unittest.TestCase):
             "CONFIG_VERSION": 2,
             "QUARK_DOWNLOAD_URL": "https://example.com/quark",
             "ROUTE_RESOURCE_URL": "https://example.com/routes",
+            "ROUTE_RESOURCE_LINKS": [{"name": "Routes", "url": "https://example.com/routes"}],
             "DOCUMENTATION_URL": "https://example.com/docs",
             "FEEDBACK_BILIBILI_URL": "https://space.bilibili.com/example",
             "FEEDBACK_QQ_GROUP": "123456789",
@@ -219,6 +220,7 @@ class ConfigMergeTests(unittest.TestCase):
 
         self.assertNotIn("QUARK_DOWNLOAD_URL", merged)
         self.assertNotIn("ROUTE_RESOURCE_URL", merged)
+        self.assertNotIn("ROUTE_RESOURCE_LINKS", merged)
         self.assertNotIn("DOCUMENTATION_URL", merged)
         self.assertNotIn("FEEDBACK_BILIBILI_URL", merged)
         self.assertNotIn("FEEDBACK_QQ_GROUP", merged)
@@ -226,6 +228,7 @@ class ConfigMergeTests(unittest.TestCase):
         self.assertNotIn("APP_UPDATE_MANIFEST_URLS", merged)
         self.assertIn("QUARK_DOWNLOAD_URL", repaired)
         self.assertIn("ROUTE_RESOURCE_URL", repaired)
+        self.assertIn("ROUTE_RESOURCE_LINKS", repaired)
         self.assertIn("DOCUMENTATION_URL", repaired)
         self.assertIn("FEEDBACK_BILIBILI_URL", repaired)
         self.assertIn("FEEDBACK_QQ_GROUP", repaired)

@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 import config
 
 from . import StyledConfirm, StyledDialogBase, StyledMessage, Toast, center_dialog, place_left_of, toast, toast_persistent
+from .color_picker import open_styled_color_picker
 from ..app.app_info import APP_VERSION
 from ..design import qss, strings, tokens
 from ..services.app_updater import (
@@ -708,44 +709,13 @@ class SettingsDialog(QDialog):
             return
         _field_key, label, default = field
         current = QColor(self._normalize_route_color(self._route_colors.get(key), default))
-        dialog = StyledDialogBase(self, f"选择{label}颜色", min_width=560, max_width=720)
-
-        picker = QColorDialog(current, dialog)
-        picker.setOption(QColorDialog.ColorDialogOption.DontUseNativeDialog, True)
-        picker.setOption(QColorDialog.ColorDialogOption.NoButtons, True)
-        picker.setAttribute(Qt.WA_StyledBackground, True)
-        picker.setStyleSheet(qss.COLOR_DIALOG_QSS)
-        picker.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self._localize_color_dialog(picker)
-
-        for spin in picker.findChildren(QSpinBox):
-            spin.setFixedWidth(56)
-        for editor in picker.findChildren(QLineEdit):
-            editor.setMaximumWidth(96)
-
-        dialog.shell_layout.addWidget(picker)
-
-        button_row = QHBoxLayout()
-        reset_btn = QPushButton("恢复默认颜色", dialog)
-        reset_btn.clicked.connect(lambda: picker.setCurrentColor(QColor(default)))
-        button_row.addWidget(reset_btn)
-        button_row.addStretch()
-
-        cancel_btn = QPushButton("取消", dialog)
-        cancel_btn.clicked.connect(dialog.reject)
-        button_row.addWidget(cancel_btn)
-
-        confirm_btn = QPushButton("确认", dialog)
-        confirm_btn.setDefault(True)
-        confirm_btn.clicked.connect(dialog.accept)
-        button_row.addWidget(confirm_btn)
-        dialog.shell_layout.addLayout(button_row)
-
-        center_dialog(dialog, self)
-        if dialog.exec() != QDialog.Accepted:
-            return
-        color = picker.currentColor()
-        if not color.isValid():
+        color = open_styled_color_picker(
+            self,
+            f"选择{label}颜色",
+            current,
+            reset_color=QColor(default),
+        )
+        if color is None or not color.isValid():
             return
         self._route_colors[key] = color.name(QColor.NameFormat.HexRgb)
         self._sync_route_color_buttons()
@@ -947,17 +917,21 @@ class SettingsDialog(QDialog):
         )
 
     def _on_route_resource_clicked(self) -> None:
-        url = str(getattr(config, "ROUTE_RESOURCE_URL", "") or "").strip()
-        if not url:
+        links, had_configured_links = self._configured_route_resource_links()
+        if links:
+            body = "<br>".join(
+                f'<a href="{escape(url, quote=True)}">{escape(name)}</a>'
+                for name, url in links
+            )
             styled_info(
                 self,
                 "路线资源",
-                "暂未从更新源获取到路线资源链接，请稍后再试或检查更新源配置。",
+                "可用路线资源：<br><br>" + body,
+                allow_links=True,
             )
             return
 
-        qurl = QUrl.fromUserInput(url)
-        if not qurl.isValid() or qurl.scheme() not in {"http", "https"}:
+        if had_configured_links:
             styled_info(
                 self,
                 "路线资源",
@@ -965,8 +939,48 @@ class SettingsDialog(QDialog):
             )
             return
 
-        if not QDesktopServices.openUrl(qurl):
-            styled_info(self, "路线资源", "无法打开路线资源链接，请检查系统默认浏览器设置。")
+        styled_info(
+            self,
+            "路线资源",
+            "暂未从更新源获取到路线资源链接，请稍后再试或检查更新源配置。",
+        )
+
+    @staticmethod
+    def _configured_route_resource_links() -> tuple[list[tuple[str, str]], bool]:
+        raw_links = getattr(config, "ROUTE_RESOURCE_LINKS", None)
+        configured_links: list[tuple[str, str]] = []
+        if isinstance(raw_links, list):
+            for item in raw_links:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip()
+                url = str(item.get("url") or "").strip()
+                if name and url:
+                    configured_links.append((name, url))
+
+        links = [
+            (name, clean_url)
+            for name, url in configured_links
+            for clean_url in [SettingsDialog._valid_http_url(url)]
+            if clean_url
+        ]
+        if links or configured_links:
+            return links, bool(configured_links)
+
+        legacy_url = str(getattr(config, "ROUTE_RESOURCE_URL", "") or "").strip()
+        if not legacy_url:
+            return [], False
+        clean_legacy_url = SettingsDialog._valid_http_url(legacy_url)
+        if not clean_legacy_url:
+            return [], True
+        return [("路线资源", clean_legacy_url)], False
+
+    @staticmethod
+    def _valid_http_url(value: str) -> str:
+        qurl = QUrl.fromUserInput(str(value or "").strip())
+        if not qurl.isValid() or qurl.scheme() not in {"http", "https"}:
+            return ""
+        return qurl.toString()
 
     def _on_documentation_clicked(self) -> None:
         url = str(getattr(config, "DOCUMENTATION_URL", "") or "").strip()

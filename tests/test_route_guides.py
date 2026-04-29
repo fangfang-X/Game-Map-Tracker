@@ -64,6 +64,74 @@ class RouteGuideTests(unittest.TestCase):
             self.assertEqual(manager.color_for("a"), (255, 209, 26))
             self.assertEqual(manager.color_for("b"), (255, 209, 26))
 
+    def test_route_color_override_takes_priority_over_global_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            category = Path(tmp) / "category"
+            category.mkdir()
+            route_id = "1234567890123"
+            (category / "route.json").write_text(
+                json.dumps({
+                    "id": route_id,
+                    "name": "route",
+                    "color": "#334455",
+                    "points": [{"x": 1, "y": 2}],
+                }),
+                encoding="utf-8",
+            )
+
+            manager = RouteManager(tmp)
+
+            with patch("config.ROUTE_MULTI_COLOR_ENABLED", True):
+                self.assertEqual(manager.color_for(route_id), (0x55, 0x44, 0x33))
+            with patch("config.ROUTE_MULTI_COLOR_ENABLED", False), patch("config.ROUTE_DEFAULT_COLOR", "#1ad1ff"):
+                self.assertEqual(manager.color_for(route_id), (0x55, 0x44, 0x33))
+
+    def test_route_without_color_override_keeps_default_color_logic(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            category = Path(tmp) / "category"
+            category.mkdir()
+            route_id = "1234567890123"
+            (category / "route.json").write_text(
+                json.dumps({
+                    "id": route_id,
+                    "name": "route",
+                    "points": [{"x": 1, "y": 2}],
+                }),
+                encoding="utf-8",
+            )
+
+            manager = RouteManager(tmp)
+
+            with patch("config.ROUTE_MULTI_COLOR_ENABLED", False), patch("config.ROUTE_DEFAULT_COLOR", "#1ad1ff"):
+                self.assertEqual(manager.color_for(route_id), (255, 209, 26))
+
+    def test_update_route_notes_and_color_normalizes_and_resets_color(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            category = Path(tmp) / "category"
+            category.mkdir()
+            route_id = "1234567890123"
+            path = category / "route.json"
+            path.write_text(
+                json.dumps({
+                    "id": route_id,
+                    "name": "route",
+                    "notes": "",
+                    "points": [{"x": 1, "y": 2}],
+                }),
+                encoding="utf-8",
+            )
+            manager = RouteManager(tmp)
+
+            self.assertTrue(manager.update_route_notes_and_color("category", "route", "说明", "#AABBCC"))
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["notes"], "说明")
+            self.assertEqual(saved["color"], "#aabbcc")
+
+            self.assertTrue(manager.update_route_notes_and_color("category", "route", "说明 2", None))
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["notes"], "说明 2")
+            self.assertNotIn("color", saved)
+
     def test_invalid_route_default_color_falls_back_to_blue(self) -> None:
         self.assertEqual(_route_color_from_hex("not-a-color"), (255, 209, 26))
 
@@ -557,6 +625,132 @@ class RouteGuideTests(unittest.TestCase):
             self.assertTrue(manager.set_point_visited("2026010101", 1, False))
             self.assertFalse(manager.point_visited("2026010101", 1))
             self.assertEqual(json.loads((base / "progress.json").read_text(encoding="utf-8")), {})
+
+    def test_set_point_position_writes_coordinates_and_preserves_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            category = base / "routes"
+            category.mkdir()
+            route_file = category / "route.json"
+            route_file.write_text(
+                json.dumps(
+                    {
+                        "id": "2026010101",
+                        "name": "route",
+                        "points": [
+                            {
+                                "id": "node-1",
+                                "x": 1,
+                                "y": 2,
+                                "typeId": "flower",
+                                "type": "Flower",
+                                "node_type": "teleport",
+                                "visited": True,
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            manager = RouteManager(str(base))
+
+            self.assertTrue(manager.set_point_position("2026010101", 0, 10.2, 20.6))
+
+            point = manager.route_for_id("2026010101")["points"][0]
+            self.assertEqual((point["x"], point["y"]), (10, 21))
+            payload = json.loads(route_file.read_text(encoding="utf-8"))
+            saved = payload["points"][0]
+            self.assertEqual(saved["id"], "node-1")
+            self.assertEqual(saved["typeId"], "flower")
+            self.assertEqual(saved["type"], "Flower")
+            self.assertEqual(saved["node_type"], "teleport")
+            self.assertEqual((saved["x"], saved["y"]), (10, 21))
+            self.assertNotIn("visited", saved)
+
+    def test_set_point_position_preview_updates_memory_without_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            category = base / "routes"
+            category.mkdir()
+            route_file = category / "route.json"
+            route_file.write_text(
+                json.dumps({"id": "2026010101", "name": "route", "points": [{"x": 1, "y": 2}]}),
+                encoding="utf-8",
+            )
+            before = route_file.read_text(encoding="utf-8")
+            manager = RouteManager(str(base))
+
+            self.assertTrue(manager.set_point_position("2026010101", 0, 7, 8, persist=False))
+
+            self.assertEqual(manager.route_for_id("2026010101")["points"][0]["x"], 7)
+            self.assertEqual(manager.route_for_id("2026010101")["points"][0]["y"], 8)
+            self.assertEqual(route_file.read_text(encoding="utf-8"), before)
+
+    def test_set_point_position_rejects_invalid_inputs_without_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            category = base / "routes"
+            category.mkdir()
+            route_file = category / "route.json"
+            route_file.write_text(
+                json.dumps({"id": "2026010101", "name": "route", "points": [{"x": 1, "y": 2}]}),
+                encoding="utf-8",
+            )
+            before = route_file.read_text(encoding="utf-8")
+            manager = RouteManager(str(base))
+
+            self.assertFalse(manager.set_point_position("missing", 0, 7, 8))
+            self.assertFalse(manager.set_point_position("2026010101", 9, 7, 8))
+            self.assertFalse(manager.set_point_position("2026010101", 0, "bad", 8))
+            self.assertEqual(route_file.read_text(encoding="utf-8"), before)
+
+    def test_set_point_position_rolls_back_memory_when_write_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            category = base / "routes"
+            category.mkdir()
+            (category / "route.json").write_text(
+                json.dumps({"id": "2026010101", "name": "route", "points": [{"x": 1, "y": 2}]}),
+                encoding="utf-8",
+            )
+            manager = RouteManager(str(base))
+
+            with patch.object(manager, "_write_route_file", side_effect=RuntimeError("boom")):
+                self.assertFalse(manager.set_point_position("2026010101", 0, 7, 8))
+
+            self.assertEqual(manager.route_for_id("2026010101")["points"][0]["x"], 1)
+            self.assertEqual(manager.route_for_id("2026010101")["points"][0]["y"], 2)
+
+    def test_set_point_position_writes_external_nodes_without_overwriting_legacy_points(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            routes_dir = Path(tmp) / "routes"
+            category = routes_dir / "other"
+            category.mkdir(parents=True)
+            source = category / "edge-route.json"
+            legacy_points = [{"x": 999, "y": 999, "label": "legacy"}]
+            source.write_text(
+                json.dumps(
+                    {
+                        "name": "edge-route",
+                        "points": legacy_points,
+                        "nodes": [{"id": "a", "x": 10, "y": 20}, {"id": "b", "x": 30, "y": 40}],
+                        "edges": [{"id": "e1", "from": "a", "to": "b", "edge_type": "virtual"}],
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            manager = RouteManager(str(routes_dir))
+            route = next(route for _category, route in manager.iter_routes() if route.get("display_name") == "edge-route")
+            route_id = manager.route_id(route)
+
+            self.assertTrue(manager.set_point_position(route_id, 1, 70, 80))
+
+            saved = json.loads(source.read_text(encoding="utf-8"))
+            self.assertEqual((saved["nodes"][1]["x"], saved["nodes"][1]["y"]), (70, 80))
+            self.assertEqual(saved["points"], legacy_points)
 
     def test_point_visited_rejects_invalid_route_or_index(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1101,6 +1295,43 @@ class RouteGuideTests(unittest.TestCase):
             self.assertEqual(point["type"], "Sunflower")
             self.assertEqual(point["label"], "Field Flower")
             self.assertNotIn("visited", point)
+
+    def test_insert_point_into_route_uses_user_position_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            category = base / "routes"
+            category.mkdir()
+            route_file = category / "route.json"
+            route_file.write_text(
+                json.dumps(
+                    {
+                        "id": "2026010101",
+                        "name": "route",
+                        "points": [
+                            {"x": 0, "y": 0},
+                            {"x": 100, "y": 0},
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            manager = RouteManager(str(base))
+
+            outcomes = manager.insert_point_into_routes(
+                90,
+                0,
+                ["2026010101"],
+                overrides={"2026010101": 0},
+            )
+
+            self.assertEqual(outcomes["2026010101"], 0)
+            payload = json.loads(route_file.read_text(encoding="utf-8"))
+            self.assertEqual([(point["x"], point["y"]) for point in payload["points"]], [
+                (90, 0),
+                (0, 0),
+                (100, 0),
+            ])
 
     def test_create_route_uses_13_digit_string_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

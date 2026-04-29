@@ -785,6 +785,31 @@ QLabel#AnnotationPanelMessage {{
     color: {FG_DIM};
     font-size: 11px;
 }}
+QFrame#RouteNotesStatsPanel {{
+    background: rgba(255, 255, 255, 0.055);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+}}
+QLabel#RouteNotesStatChip {{
+    color: {FG};
+    background: rgba(255, 255, 255, 0.07);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 7px;
+    padding: 3px 7px;
+    font-size: 11px;
+}}
+QWidget#RouteNotesNodeRow {{
+    background: rgba(255, 255, 255, 0.035);
+    border: 1px solid rgba(255, 255, 255, 0.045);
+    border-radius: 7px;
+}}
+QWidget#RouteNotesNodeRow:hover {{
+    background: rgba(255, 255, 255, 0.075);
+}}
+QLabel#RouteNotesNodeName {{
+    color: {FG};
+    font-size: 11px;
+}}
 QPushButton#AnnotationPanelBulkButton {{
     min-height: 18px;
     padding: 0px 6px;

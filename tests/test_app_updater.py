@@ -138,6 +138,50 @@ class AppUpdaterTests(unittest.TestCase):
         self.assertEqual(result.app_status_message, "公告内容")
         self.assertTrue(result.app_notice_force_prompt)
 
+    def test_parse_manifest_min_supported_version_defaults_to_disabled(self) -> None:
+        manifest = app_updater.parse_app_manifest({"version": "0.2.0", "files": []})
+        result = app_updater.build_update_plan(manifest, current_version="0.1.0")
+
+        self.assertEqual(manifest.min_supported_version, "")
+        self.assertEqual(manifest.min_supported_version_message, "")
+        self.assertFalse(result.requires_min_supported_update)
+
+    def test_parse_manifest_min_supported_version_flows_to_check_result(self) -> None:
+        manifest = app_updater.parse_app_manifest(
+            {
+                "version": "0.2.0",
+                "min_supported_version": "0.1.2",
+                "min_supported_version_message": "请更新后继续使用",
+                "files": [],
+            }
+        )
+        low = app_updater.build_update_plan(manifest, current_version="0.1.1")
+        equal = app_updater.build_update_plan(manifest, current_version="0.1.2")
+        newer = app_updater.build_update_plan(manifest, current_version="0.1.3")
+
+        self.assertEqual(manifest.min_supported_version, "0.1.2")
+        self.assertEqual(manifest.min_supported_version_message, "请更新后继续使用")
+        self.assertTrue(low.requires_min_supported_update)
+        self.assertEqual(low.min_supported_version, "0.1.2")
+        self.assertEqual(low.min_supported_version_message, "请更新后继续使用")
+        self.assertFalse(equal.requires_min_supported_update)
+        self.assertFalse(newer.requires_min_supported_update)
+
+    def test_parse_manifest_invalid_min_supported_version_is_ignored(self) -> None:
+        manifest = app_updater.parse_app_manifest(
+            {
+                "version": "0.2.0",
+                "min_supported_version": "tomorrow",
+                "min_supported_version_message": "ignored",
+                "files": [],
+            }
+        )
+        result = app_updater.build_update_plan(manifest, current_version="0.1.0")
+
+        self.assertEqual(manifest.min_supported_version, "")
+        self.assertEqual(manifest.min_supported_version_message, "")
+        self.assertFalse(result.requires_min_supported_update)
+
     def test_parse_manifest_app_notice_force_prompt_requires_boolean_true(self) -> None:
         manifest = app_updater.parse_app_manifest(
             {
@@ -269,6 +313,10 @@ class AppUpdaterTests(unittest.TestCase):
                         "runtime_config": {
                             "QUARK_DOWNLOAD_URL": "https://pan.example/download",
                             "ROUTE_RESOURCE_URL": "https://example.test/routes",
+                            "ROUTE_RESOURCE_LINKS": [
+                                {"name": "Routes", "url": "https://example.test/routes"},
+                                {"name": "Backup", "url": "https://example.test/backup"},
+                            ],
                             "DOCUMENTATION_URL": "https://example.test/docs",
                             "FEEDBACK_BILIBILI_URL": "https://space.bilibili.com/example",
                             "FEEDBACK_QQ_GROUP": "123456789",
@@ -285,7 +333,9 @@ class AppUpdaterTests(unittest.TestCase):
 
         with patch.object(config, "QUARK_DOWNLOAD_URL", ""), patch.object(
             config, "ROUTE_RESOURCE_URL", ""
-        ), patch.object(config, "FEEDBACK_BILIBILI_URL", ""), patch.object(
+        ), patch.object(config, "ROUTE_RESOURCE_LINKS", []), patch.object(
+            config, "FEEDBACK_BILIBILI_URL", ""
+        ), patch.object(
             config, "FEEDBACK_QQ_GROUP", ""
         ), patch.object(
             config, "DOCUMENTATION_URL", ""
@@ -300,6 +350,13 @@ class AppUpdaterTests(unittest.TestCase):
             self.assertTrue(result.ok)
             self.assertEqual(config.QUARK_DOWNLOAD_URL, "https://pan.example/download")
             self.assertEqual(config.ROUTE_RESOURCE_URL, "https://example.test/routes")
+            self.assertEqual(
+                config.ROUTE_RESOURCE_LINKS,
+                [
+                    {"name": "Routes", "url": "https://example.test/routes"},
+                    {"name": "Backup", "url": "https://example.test/backup"},
+                ],
+            )
             self.assertEqual(config.DOCUMENTATION_URL, "https://example.test/docs")
             self.assertEqual(config.FEEDBACK_BILIBILI_URL, "https://space.bilibili.com/example")
             self.assertEqual(config.FEEDBACK_QQ_GROUP, "123456789")
@@ -467,6 +524,57 @@ class AppUpdaterTests(unittest.TestCase):
         self.assertEqual(unknown["app_status_message"], "")
         self.assertFalse(unknown["app_notice_force_prompt"])
 
+    def test_generate_manifest_writes_min_supported_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            Path(root, "demo.txt").write_bytes(b"demo")
+
+            manifest = generate_update_manifest.build_manifest(
+                root,
+                version="0.2.0",
+                base_url="https://example.test/update/",
+                notes="",
+                requires_launcher_update=False,
+                prompt_update=False,
+                force_update_prompt=False,
+                min_supported_version="0.1.2",
+                min_supported_version_message="请更新后继续使用",
+            )
+            default_message = generate_update_manifest.build_manifest(
+                root,
+                version="0.2.0",
+                base_url="https://example.test/update/",
+                notes="",
+                requires_launcher_update=False,
+                prompt_update=False,
+                force_update_prompt=False,
+                min_supported_version="0.1.2",
+            )
+
+        self.assertEqual(manifest["min_supported_version"], "0.1.2")
+        self.assertEqual(manifest["min_supported_version_message"], "请更新后继续使用")
+        self.assertEqual(
+            default_message["min_supported_version_message"],
+            generate_update_manifest.DEFAULT_MIN_SUPPORTED_VERSION_MESSAGE,
+        )
+
+    def test_generate_manifest_rejects_min_supported_version_above_release(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            Path(root, "demo.txt").write_bytes(b"demo")
+
+            with self.assertRaises(ValueError):
+                generate_update_manifest.build_manifest(
+                    root,
+                    version="0.2.0",
+                    base_url="https://example.test/update/",
+                    notes="",
+                    requires_launcher_update=False,
+                    prompt_update=False,
+                    force_update_prompt=False,
+                    min_supported_version="0.2.1",
+                )
+
     def test_generate_manifest_writes_obsolete_config_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -512,6 +620,14 @@ class AppUpdaterTests(unittest.TestCase):
                     {
                         "QUARK_DOWNLOAD_URL": " https://pan.example/download ",
                         "ROUTE_RESOURCE_URL": "https://example.test/routes",
+                        "ROUTE_RESOURCE_LINKS": [
+                            {"name": " Routes ", "url": " https://example.test/routes "},
+                            {"name": "Routes", "url": "https://example.test/routes"},
+                            {"name": "Backup", "url": "https://example.test/backup"},
+                            {"name": "", "url": "https://example.test/empty-name"},
+                            {"name": "Missing URL"},
+                            "https://wrong.example/routes",
+                        ],
                         "DOCUMENTATION_URL": "https://example.test/docs",
                         "FEEDBACK_BILIBILI_URL": "https://space.bilibili.com/example",
                         "FEEDBACK_QQ_GROUP": "123456789",
@@ -545,6 +661,10 @@ class AppUpdaterTests(unittest.TestCase):
             {
                 "QUARK_DOWNLOAD_URL": "https://pan.example/download",
                 "ROUTE_RESOURCE_URL": "https://example.test/routes",
+                "ROUTE_RESOURCE_LINKS": [
+                    {"name": "Routes", "url": "https://example.test/routes"},
+                    {"name": "Backup", "url": "https://example.test/backup"},
+                ],
                 "DOCUMENTATION_URL": "https://example.test/docs",
                 "FEEDBACK_BILIBILI_URL": "https://space.bilibili.com/example",
                 "FEEDBACK_QQ_GROUP": "123456789",
@@ -579,6 +699,11 @@ class AppUpdaterTests(unittest.TestCase):
                     {
                         "QUARK_DOWNLOAD_URL": ["https://wrong.example"],
                         "ROUTE_RESOURCE_URL": 123,
+                        "ROUTE_RESOURCE_LINKS": [
+                            {"name": "", "url": "https://wrong.example/routes"},
+                            {"name": "Missing URL"},
+                            "https://wrong.example/routes",
+                        ],
                         "DOCUMENTATION_URL": ["https://wrong.example/docs"],
                         "FEEDBACK_BILIBILI_URL": None,
                         "FEEDBACK_QQ_GROUP": {},
@@ -626,6 +751,8 @@ class AppUpdaterTests(unittest.TestCase):
             points = Path(root, "tools", "points_all", "points.json")
             points.parent.mkdir(parents=True)
             points.write_text("{}", encoding="utf-8")
+            converter = Path(root, "tools", "json_txt_converter.exe")
+            converter.write_bytes(b"converter")
             cache = Path(root, "tools", "points_get", ".cache_17173_locations.json")
             cache.parent.mkdir(parents=True)
             cache.write_text("{}", encoding="utf-8")
@@ -645,13 +772,21 @@ class AppUpdaterTests(unittest.TestCase):
 
         paths = {item["path"] for item in manifest["files"]}
         self.assertIn("demo.txt", paths)
+        self.assertNotIn("tools/json_txt_converter.exe", paths)
         self.assertNotIn("routes/地区路线/雪山__来自用户道临沂.json", paths)
         self.assertNotIn("routes/recent_routes.json", paths)
         self.assertNotIn("tools/points_all/points.json", paths)
         self.assertNotIn("tools/points_get/.cache_17173_locations.json", paths)
         self.assertNotIn("tools/points_icon/icons.json", paths)
 
-    def test_parse_manifest_ignores_user_routes_and_points_from_old_manifest(self) -> None:
+    def test_manifest_generator_excludes_protected_publish_paths(self) -> None:
+        self.assertTrue(generate_update_manifest.is_user_data_path("tools/json_txt_converter.exe"))
+        self.assertTrue(generate_update_manifest.is_user_data_path("tools/points_all/points.json"))
+        self.assertTrue(generate_update_manifest.is_user_data_path("tools/points_get/.cache_17173_locations.json"))
+        self.assertTrue(generate_update_manifest.is_user_data_path("tools/points_icon/icons.json"))
+        self.assertTrue(generate_update_manifest.is_user_data_path("routes/demo.json"))
+
+    def test_parse_manifest_respects_listed_routes_and_points(self) -> None:
         payload = {
             "version": "0.2.0",
             "files": [
@@ -686,6 +821,12 @@ class AppUpdaterTests(unittest.TestCase):
                     "size": 1,
                 },
                 {
+                    "path": "tools/json_txt_converter.exe",
+                    "url": "https://example.test/json_txt_converter.exe",
+                    "sha256": "6" * 64,
+                    "size": 1,
+                },
+                {
                     "path": "demo.txt",
                     "url": "https://example.test/demo.txt",
                     "sha256": "2" * 64,
@@ -698,14 +839,29 @@ class AppUpdaterTests(unittest.TestCase):
                 "tools/points_all/points.json",
                 "tools/points_get/.cache_17173_locations.json",
                 "tools/points_icon/icons.json",
+                "config.json",
                 "demo-old.txt",
             ],
         }
 
         manifest = app_updater.parse_app_manifest(payload)
 
-        self.assertEqual([file.path for file in manifest.files], ["demo.txt"])
-        self.assertEqual(manifest.delete, ("demo-old.txt",))
+        self.assertEqual(
+            [file.path for file in manifest.files],
+            [str(item["path"]) for item in payload["files"]],
+        )
+        self.assertEqual(
+            manifest.delete,
+            (
+                "routes/demo.json",
+                "routes/recent_routes.json",
+                "tools/points_all/points.json",
+                "tools/points_get/.cache_17173_locations.json",
+                "tools/points_icon/icons.json",
+                "config.json",
+                "demo-old.txt",
+            ),
+        )
 
     def test_download_changed_files_reports_progress(self) -> None:
         payload = b"abcdef"
@@ -849,7 +1005,70 @@ class AppUpdaterTests(unittest.TestCase):
         self.assertTrue(result.requires_restart)
         self.assertEqual(result.changed_files[0].file.path, "GMT-N.exe")
 
-    def test_build_update_plan_ignores_user_route_files(self) -> None:
+    def test_build_update_plan_blocks_older_manifest_file_overwrite(self) -> None:
+        exe_payload = b"older remote exe"
+        manifest = app_updater.parse_app_manifest(
+            {
+                "version": "0.1.2",
+                "prompt_update": True,
+                "force_update_prompt": True,
+                "requires_launcher_update": True,
+                "files": [
+                    {
+                        "path": "GMT-N.exe",
+                        "url": "https://example.test/GMT-N.exe",
+                        "sha256": _sha256_bytes(exe_payload),
+                        "size": len(exe_payload),
+                    }
+                ],
+                "delete": ["old.txt"],
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config.BASE_DIR = tmp
+            Path(tmp, "GMT-N.exe").write_bytes(b"newer local exe")
+            Path(tmp, "old.txt").write_text("keep", encoding="utf-8")
+
+            result = app_updater.build_update_plan(manifest, current_version="0.1.3")
+
+        self.assertTrue(result.ok)
+        self.assertFalse(result.has_update)
+        self.assertFalse(result.requires_restart)
+        self.assertFalse(result.prompt_update)
+        self.assertFalse(result.force_update_prompt)
+        self.assertEqual(result.changed_files, ())
+        self.assertEqual(result.delete_files, ())
+        self.assertEqual(result.download_size, 0)
+
+    def test_build_update_plan_allows_newer_program_update_from_012(self) -> None:
+        exe_payload = b"new exe"
+        manifest = app_updater.parse_app_manifest(
+            {
+                "version": "0.1.3",
+                "files": [
+                    {
+                        "path": "GMT-N.exe",
+                        "url": "https://example.test/GMT-N.exe",
+                        "sha256": _sha256_bytes(exe_payload),
+                        "size": len(exe_payload),
+                    }
+                ],
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config.BASE_DIR = tmp
+            Path(tmp, "GMT-N.exe").write_bytes(b"old exe")
+
+            result = app_updater.build_update_plan(manifest, current_version="0.1.2")
+
+        self.assertTrue(result.ok)
+        self.assertTrue(result.has_update)
+        self.assertTrue(result.requires_restart)
+        self.assertEqual([change.file.path for change in result.changed_files], ["GMT-N.exe"])
+
+    def test_build_update_plan_respects_manifest_route_files_and_preserves_local_conflict(self) -> None:
         old_payload = b"old route"
         new_payload = b"new route"
         manifest = app_updater.AppUpdateManifest(
@@ -882,7 +1101,35 @@ class AppUpdaterTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(result.changed_files, ())
         self.assertEqual(result.delete_files, ())
-        self.assertEqual(result.skipped_conflicts, ())
+        self.assertEqual(result.skipped_conflicts, ("routes/demo.json",))
+
+    def test_build_update_plan_allows_json_txt_converter_when_manifest_lists_it(self) -> None:
+        payload = b"converter"
+        manifest = app_updater.parse_app_manifest(
+            {
+                "version": "0.2.0",
+                "files": [
+                    {
+                        "path": "tools/json_txt_converter.exe",
+                        "url": "https://example.test/tools/json_txt_converter.exe",
+                        "sha256": _sha256_bytes(payload),
+                        "size": len(payload),
+                    }
+                ],
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config.BASE_DIR = tmp
+            result = app_updater.build_update_plan(
+                manifest,
+                current_version="0.2.0",
+                installed_manifest={},
+        )
+
+        self.assertTrue(result.ok)
+        self.assertTrue(result.has_update)
+        self.assertEqual([change.file.path for change in result.changed_files], ["tools/json_txt_converter.exe"])
 
     def test_install_config_update_merges_without_overwriting_user_values(self) -> None:
         defaults = {

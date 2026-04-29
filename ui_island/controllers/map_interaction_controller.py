@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 class MapInteractionController:
     def __init__(self, window: "IslandWindow") -> None:
         self.window = window
+        self._last_point_move_undo: dict | None = None
 
     def _refresh_annotation_ui(self) -> None:
         self.window.annotation_panel.load_index(config.app_path("tools", "points_all", "points.json"))
@@ -32,7 +33,7 @@ class MapInteractionController:
     def on_add_point_requested(self, x: int, y: int) -> None:
         drawing = getattr(self.window, "route_drawing_state", None)
         if drawing is not None and drawing.active:
-            self.window.route_panel_controller.append_drawing_point(x, y)
+            self.window.route_panel_controller.append_drawing_point_from_context_menu(x, y)
             return
         self.add_point_to_routes(x, y)
 
@@ -68,6 +69,35 @@ class MapInteractionController:
         self._refresh_annotation_ui()
 
         toast(self.window, strings.MAP_ADD_ANNOTATION_SUCCESS_FMT.format(name=type_name))
+
+    def add_annotated_point_to_routes(self, x: int, y: int) -> None:
+        route_mgr = self.window.route_mgr
+        if not route_mgr.visible_route_ids():
+            styled_info(
+                self.window,
+                strings.INSERT_POINT_EMPTY_TITLE,
+                strings.INSERT_POINT_EMPTY_BODY,
+            )
+            return
+
+        items = route_mgr.annotation_type_items()
+        if not items:
+            styled_info(
+                self.window,
+                strings.ANNOTATION_TYPE_PICKER_TITLE,
+                strings.ANNOTATION_TYPE_PICKER_EMPTY,
+            )
+            return
+
+        selected = open_annotation_type_picker(self.window, items, "")
+        if selected is None:
+            return
+
+        type_id = str(selected.get("typeId") or "").strip()
+        if not type_id:
+            return
+        type_name = str(selected.get("type") or type_id).strip() or type_id
+        self.add_point_to_routes(x, y, point_fields={"typeId": type_id, "type": type_name})
 
     def change_map_annotation(self, type_id: str, point_index: int) -> None:
         route_mgr = self.window.route_mgr
@@ -166,6 +196,78 @@ class MapInteractionController:
             self.window.route_panel_controller.refresh_tracked_routes()
         except Exception:
             pass
+
+    def _set_point_move_undo(self, action: dict | None) -> None:
+        self._last_point_move_undo = action
+        try:
+            self.window.map_view.set_route_point_move_undo_available(action is not None)
+        except Exception:
+            pass
+
+    def clear_route_point_move_undo(self) -> None:
+        self._set_point_move_undo(None)
+
+    def has_route_point_move_undo(self) -> bool:
+        return self._last_point_move_undo is not None
+
+    def move_route_point_preview(self, route_id: str, point_index: int, x: int, y: int) -> None:
+        if not self.window.route_mgr.set_point_position(route_id, point_index, x, y, persist=False):
+            return
+        self._refresh_route_point_ui()
+
+    def finish_move_route_point(
+        self,
+        route_id: str,
+        point_index: int,
+        before_x: int,
+        before_y: int,
+        after_x: int,
+        after_y: int,
+    ) -> None:
+        before = (int(before_x), int(before_y))
+        after = (int(after_x), int(after_y))
+        if before == after:
+            return
+
+        route_mgr = self.window.route_mgr
+        route_mgr.set_point_position(route_id, point_index, before[0], before[1], persist=False)
+        if not route_mgr.set_point_position(route_id, point_index, after[0], after[1], persist=True):
+            route_mgr.set_point_position(route_id, point_index, before[0], before[1], persist=False)
+            self._refresh_route_point_ui()
+            styled_info(self.window, strings.POINT_MOVE_FAIL_TITLE, strings.POINT_MOVE_FAIL_BODY)
+            return
+
+        self._set_point_move_undo({
+            "route_id": route_id,
+            "point_index": int(point_index),
+            "before": before,
+            "after": after,
+        })
+        self._refresh_route_point_ui()
+        toast(self.window, strings.POINT_MOVE_SUCCESS)
+
+    def undo_route_point_move(self) -> None:
+        action = self._last_point_move_undo
+        if not isinstance(action, dict):
+            return
+        route_id = str(action.get("route_id") or "")
+        try:
+            point_index = int(action.get("point_index"))
+            before = tuple(action.get("before") or ())
+        except (TypeError, ValueError):
+            self.clear_route_point_move_undo()
+            return
+        if len(before) != 2:
+            self.clear_route_point_move_undo()
+            return
+
+        if not self.window.route_mgr.set_point_position(route_id, point_index, before[0], before[1], persist=True):
+            styled_info(self.window, strings.POINT_MOVE_FAIL_TITLE, strings.POINT_MOVE_FAIL_BODY)
+            return
+
+        self.clear_route_point_move_undo()
+        self._refresh_route_point_ui()
+        toast(self.window, strings.POINT_MOVE_UNDO_SUCCESS)
 
     def change_point_node_type(self, route_id: str, point_index: int, global_pos) -> None:
         drawing = getattr(self.window, "route_drawing_state", None)
@@ -328,6 +430,7 @@ class MapInteractionController:
         else:
             toast(self.window, strings.DELETE_POINT_SUCCESS_FMT.format(count=ok_count))
 
+        self.clear_route_point_move_undo()
         try:
             self.window.map_view._refresh_from_last_frame()
         except Exception:
@@ -424,6 +527,7 @@ class MapInteractionController:
         else:
             toast(self.window, strings.INSERT_POINT_SUCCESS_FMT.format(count=ok_count))
 
+        self.clear_route_point_move_undo()
         try:
             self.window.map_view._refresh_from_last_frame()
         except Exception:

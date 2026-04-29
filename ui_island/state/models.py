@@ -65,6 +65,7 @@ class RouteDrawingState:
     loop: bool = False
     original_loop: bool = False
     node_type: str = "collect"
+    insert_at_end: bool = True
     add_node_annotation: bool = False
     same_annotation_type: bool = False
     annotation_type: str = ""
@@ -86,6 +87,7 @@ class RouteDrawingState:
         self.loop = False
         self.original_loop = False
         self.node_type = "collect"
+        self.insert_at_end = True
         self.add_node_annotation = False
         self.same_annotation_type = False
         self.annotation_type = ""

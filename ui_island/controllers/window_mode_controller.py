@@ -452,6 +452,9 @@ class WindowModeController:
 
         self.window._update_lock_button_visibility()
         self.window._update_header_button_labels()
+        sync_route_point_drag = getattr(self.window, "_sync_route_point_drag_enabled", None)
+        if callable(sync_route_point_drag):
+            sync_route_point_drag()
 
     def flush_stable_size_to_config(self) -> None:
         mode_enum = self.window._mode.__class__

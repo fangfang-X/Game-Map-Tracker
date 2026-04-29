@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 from urllib.parse import quote
 
@@ -40,6 +41,8 @@ APP_STATUS_NORMAL = "normal"
 APP_STATUS_NOTICE = "notice"
 APP_STATUS_DISABLED = "disabled"
 APP_STATUS_VALUES = {APP_STATUS_NORMAL, APP_STATUS_NOTICE, APP_STATUS_DISABLED}
+DEFAULT_MIN_SUPPORTED_VERSION_MESSAGE = "当前版本已停止维护，请更新到最新版后继续使用。"
+_VERSION_RE = re.compile(r"^\s*v?(\d+)\.(\d+)\.(\d+)(?:[-+]([0-9A-Za-z.-]+))?\s*$")
 
 
 def default_runtime_config_path() -> Path:
@@ -87,12 +90,36 @@ def _dedupe_strings(values: list[str]) -> list[str]:
     return result
 
 
+def _sanitize_named_links(value: object) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    seen: set[tuple[str, str]] = set()
+    result: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        url = str(item.get("url") or "").strip()
+        if not name or not url:
+            continue
+        key = (name, url)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append({"name": name, "url": url})
+    return result
+
+
 def sanitize_runtime_config(payload: dict) -> dict:
     runtime_config: dict = {}
     for key in RUNTIME_CONFIG_STRING_KEYS:
         value = payload.get(key)
         if isinstance(value, str):
             runtime_config[key] = value.strip()
+
+    route_resource_links = _sanitize_named_links(payload.get("ROUTE_RESOURCE_LINKS"))
+    if route_resource_links:
+        runtime_config["ROUTE_RESOURCE_LINKS"] = route_resource_links
 
     manifest_urls: list[str] = []
     legacy_manifest_url = payload.get("APP_UPDATE_MANIFEST_URL")
@@ -130,6 +157,46 @@ def sanitize_app_status(value: str) -> str:
     return status if status in APP_STATUS_VALUES else APP_STATUS_NORMAL
 
 
+def parse_version(value: str) -> tuple[int, int, int, str]:
+    match = _VERSION_RE.match(str(value or ""))
+    if not match:
+        raise ValueError(f"版本号格式无效：{value}")
+    major, minor, patch, prerelease = match.groups()
+    return int(major), int(minor), int(patch), prerelease or ""
+
+
+def normalize_version(value: str) -> str:
+    major, minor, patch, prerelease = parse_version(value)
+    base = f"{major}.{minor}.{patch}"
+    return f"{base}-{prerelease}" if prerelease else base
+
+
+def _prerelease_key(value: str) -> tuple[tuple[int, int | str], ...]:
+    parts: list[tuple[int, int | str]] = []
+    for part in re.split(r"[.-]", value):
+        if part.isdigit():
+            parts.append((0, int(part)))
+        else:
+            parts.append((1, part.lower()))
+    return tuple(parts)
+
+
+def compare_versions(left: str, right: str) -> int:
+    left_major, left_minor, left_patch, left_prerelease = parse_version(left)
+    right_major, right_minor, right_patch, right_prerelease = parse_version(right)
+    left_core = (left_major, left_minor, left_patch)
+    right_core = (right_major, right_minor, right_patch)
+    if left_core != right_core:
+        return 1 if left_core > right_core else -1
+    if left_prerelease == right_prerelease:
+        return 0
+    if not left_prerelease:
+        return 1
+    if not right_prerelease:
+        return -1
+    return 1 if _prerelease_key(left_prerelease) > _prerelease_key(right_prerelease) else -1
+
+
 def build_manifest(
     root: Path,
     *,
@@ -142,13 +209,24 @@ def build_manifest(
     app_status: str = APP_STATUS_NORMAL,
     app_status_message: str = "",
     app_notice_force_prompt: bool = False,
+    min_supported_version: str = "",
+    min_supported_version_message: str = "",
     runtime_config_path: Path | str | None = None,
     obsolete_config_keys: list[str] | tuple[str, ...] | None = None,
 ) -> dict:
     files = []
+    clean_version = normalize_version(version)
     normalized_base_url = normalize_base_url(base_url)
     clean_app_status = sanitize_app_status(app_status)
     clean_app_status_message = str(app_status_message or "").strip() if clean_app_status != APP_STATUS_NORMAL else ""
+    clean_min_supported_version = normalize_version(min_supported_version) if str(min_supported_version or "").strip() else ""
+    if clean_min_supported_version and compare_versions(clean_min_supported_version, clean_version) > 0:
+        raise ValueError("min_supported_version 不能大于发布版本 version")
+    clean_min_supported_version_message = (
+        str(min_supported_version_message or "").strip() or DEFAULT_MIN_SUPPORTED_VERSION_MESSAGE
+        if clean_min_supported_version
+        else ""
+    )
     for path, rel in iter_release_files(root):
         item = {
             "path": rel,
@@ -161,11 +239,13 @@ def build_manifest(
         files.append(item)
 
     manifest = {
-        "version": version,
+        "version": clean_version,
         "notes": notes,
         "app_status": clean_app_status,
         "app_status_message": clean_app_status_message,
         "app_notice_force_prompt": app_notice_force_prompt is True,
+        "min_supported_version": clean_min_supported_version,
+        "min_supported_version_message": clean_min_supported_version_message,
         "requires_launcher_update": bool(requires_launcher_update),
         "prompt_update": bool(prompt_update),
         "force_update_prompt": bool(force_update_prompt),
@@ -229,6 +309,16 @@ def main(argv: list[str] | None = None) -> int:
         help="app_status=notice 时每次启动都弹窗显示公告。",
     )
     parser.add_argument(
+        "--min-supported-version",
+        default="",
+        help="低于此版本的客户端必须更新后才能继续使用，例如 0.1.2。",
+    )
+    parser.add_argument(
+        "--min-supported-version-message",
+        default="",
+        help="低版本强制更新时显示给用户的说明文字。",
+    )
+    parser.add_argument(
         "-o",
         "--output",
         default="app-manifest.json",
@@ -262,6 +352,8 @@ def main(argv: list[str] | None = None) -> int:
         app_status=args.app_status,
         app_status_message=args.app_status_message,
         app_notice_force_prompt=args.app_notice_force_prompt,
+        min_supported_version=args.min_supported_version,
+        min_supported_version_message=args.min_supported_version_message,
         runtime_config_path=args.runtime_config,
         obsolete_config_keys=args.obsolete_config_key,
     )

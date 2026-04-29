@@ -25,6 +25,7 @@ class MapView(QWidget):
     manual_view_changed = Signal()
     add_point_requested = Signal(int, int)
     add_annotation_requested = Signal(int, int)
+    add_annotated_point_requested = Signal(int, int)
     delete_point_requested = Signal(str, int)
     mark_point_visited_requested = Signal(str, int, bool)
     change_point_annotation_requested = Signal(str, int)
@@ -35,7 +36,12 @@ class MapView(QWidget):
     delete_annotation_requested = Signal(str, int)
     guide_hint_changed = Signal(object)
     drawing_point_requested = Signal(int, int)
+    drawing_point_move_requested = Signal(int, int, int)
+    drawing_point_move_finished = Signal(int, int, int, int, int)
     drawing_undo_requested = Signal()
+    route_point_move_requested = Signal(str, int, int, int)
+    route_point_move_finished = Signal(str, int, int, int, int, int)
+    route_point_move_undo_requested = Signal()
 
     _ABSOLUTE_MIN_ZOOM = 0.05
     _MAX_ZOOM = 3.5
@@ -61,6 +67,15 @@ class MapView(QWidget):
         self._left_dragging = False
         self._hover_map_pos: tuple[float, float] | None = None
         self._drawing_context: dict | None = None
+        self._drawing_drag_index: int | None = None
+        self._drawing_drag_start_map: tuple[int, int] | None = None
+        self._drawing_drag_current_map: tuple[int, int] | None = None
+        self._route_point_drag_enabled = False
+        self._route_point_move_undo_available = False
+        self._route_point_drag_route_id: str | None = None
+        self._route_point_drag_index: int | None = None
+        self._route_point_drag_start_map: tuple[int, int] | None = None
+        self._route_point_drag_current_map: tuple[int, int] | None = None
         self._last_player: tuple[int, int] | None = None
         self._last_state: TrackState | None = None
         self._last_auto_visit = True
@@ -81,6 +96,14 @@ class MapView(QWidget):
         if locked and self._last_player is not None:
             self._view_center = QPointF(float(self._last_player[0]), float(self._last_player[1]))
             self._refresh_from_last_frame()
+
+    def set_route_point_drag_enabled(self, enabled: bool) -> None:
+        self._route_point_drag_enabled = bool(enabled)
+        if not self._route_point_drag_enabled:
+            self._reset_route_point_drag()
+
+    def set_route_point_move_undo_available(self, available: bool) -> None:
+        self._route_point_move_undo_available = bool(available)
 
     def reset_view(self) -> None:
         self._zoom = 1.0
@@ -289,6 +312,10 @@ class MapView(QWidget):
 
     def set_route_drawing_context(self, context: dict | None) -> None:
         self._drawing_context = dict(context) if isinstance(context, dict) else None
+        if not self._is_drawing_active() or self._is_drawing_paused():
+            self._reset_drawing_node_drag()
+        if self._is_drawing_active():
+            self._reset_route_point_drag()
         self._refresh_from_last_frame()
 
     def _is_drawing_active(self) -> bool:
@@ -296,6 +323,43 @@ class MapView(QWidget):
 
     def _is_drawing_paused(self) -> bool:
         return bool(self._is_drawing_active() and self._drawing_context and self._drawing_context.get("paused"))
+
+    def _reset_drawing_node_drag(self) -> None:
+        self._drawing_drag_index = None
+        self._drawing_drag_start_map = None
+        self._drawing_drag_current_map = None
+
+    def _reset_route_point_drag(self) -> None:
+        self._route_point_drag_route_id = None
+        self._route_point_drag_index = None
+        self._route_point_drag_start_map = None
+        self._route_point_drag_current_map = None
+
+    def _route_node_map_pos(self, route_id: str, index: int) -> tuple[int, int] | None:
+        route = self.route_mgr.route_for_id(route_id)
+        points = route.get("points") if isinstance(route, dict) else None
+        if not isinstance(points, list) or not (0 <= index < len(points)):
+            return None
+        point = points[index]
+        if not isinstance(point, dict):
+            return None
+        try:
+            return int(float(point["x"])), int(float(point["y"]))
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def _draft_node_map_pos(self, index: int) -> tuple[int, int] | None:
+        context = self._drawing_context if isinstance(self._drawing_context, dict) else None
+        points = context.get("points") if context else None
+        if not isinstance(points, list) or not (0 <= index < len(points)):
+            return None
+        point = points[index]
+        if not isinstance(point, dict):
+            return None
+        try:
+            return int(float(point["x"])), int(float(point["y"]))
+        except (KeyError, TypeError, ValueError):
+            return None
 
     def _drawing_route_payload(self) -> dict | None:
         if not self._is_drawing_active() or not self._drawing_context:
@@ -309,7 +373,12 @@ class MapView(QWidget):
         }
 
     def _draw_drawing_preview(self, painter: QPainter) -> None:
-        if not self._is_drawing_active() or self._is_drawing_paused() or not self._drawing_context:
+        if (
+            not self._is_drawing_active()
+            or self._is_drawing_paused()
+            or self._drawing_drag_index is not None
+            or not self._drawing_context
+        ):
             return
         points = self._drawing_context.get("points") or []
         if not points or self._hover_map_pos is None:
@@ -358,11 +427,16 @@ class MapView(QWidget):
 
     def keyPressEvent(self, event):
         if (
-            self._is_drawing_active()
-            and event.key() == Qt.Key_Z
+            event.key() == Qt.Key_Z
             and event.modifiers() & Qt.ControlModifier
         ):
-            self.drawing_undo_requested.emit()
+            if self._is_drawing_active():
+                self.drawing_undo_requested.emit()
+            elif self._route_point_move_undo_available:
+                self.route_point_move_undo_requested.emit()
+            else:
+                super().keyPressEvent(event)
+                return
             event.accept()
             return
         super().keyPressEvent(event)
@@ -370,6 +444,36 @@ class MapView(QWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton and self._pixmap is not None:
             self.setFocus(Qt.MouseFocusReason)
+            if self._is_drawing_active() and not self._is_drawing_paused():
+                draft_hit = self._hit_test_draft_node(event.position())
+                if draft_hit is not None:
+                    start_map = self._draft_node_map_pos(draft_hit)
+                    if start_map is not None:
+                        self._drawing_drag_index = draft_hit
+                        self._drawing_drag_start_map = start_map
+                        self._drawing_drag_current_map = start_map
+                        self._left_press_pos = event.position()
+                        self._left_press_map = None
+                        self._left_dragging = False
+                        self._drag_last_pos = None
+                        event.accept()
+                        return
+            if self._route_point_drag_enabled and not self._is_drawing_active():
+                route_hit = self._hit_test_node(event.position())
+                if route_hit is not None:
+                    route_id, point_index = route_hit
+                    start_map = self._route_node_map_pos(route_id, point_index)
+                    if start_map is not None:
+                        self._route_point_drag_route_id = route_id
+                        self._route_point_drag_index = point_index
+                        self._route_point_drag_start_map = start_map
+                        self._route_point_drag_current_map = start_map
+                        self._left_press_pos = event.position()
+                        self._left_press_map = None
+                        self._left_dragging = False
+                        self._drag_last_pos = None
+                        event.accept()
+                        return
             self._left_press_pos = event.position()
             self._left_press_map = self._widget_to_map(event.position())
             self._left_dragging = False
@@ -380,6 +484,52 @@ class MapView(QWidget):
 
     def mouseMoveEvent(self, event):
         self._hover_map_pos = self._widget_to_map(event.position())
+
+        if self._drawing_drag_index is not None:
+            if self._left_press_pos is not None and not self._left_dragging:
+                delta_from_press = event.position() - self._left_press_pos
+                app = QApplication.instance()
+                threshold = app.startDragDistance() if app is not None else QApplication.startDragDistance()
+                threshold = max(1, int(threshold))
+                if max(abs(delta_from_press.x()), abs(delta_from_press.y())) < threshold:
+                    event.accept()
+                    return
+                self._left_dragging = True
+
+            mapped = self._hover_map_pos
+            if mapped is not None:
+                current = (int(mapped[0]), int(mapped[1]))
+                if current != self._drawing_drag_current_map:
+                    self._drawing_drag_current_map = current
+                    self.drawing_point_move_requested.emit(self._drawing_drag_index, current[0], current[1])
+            event.accept()
+            return
+
+        if self._route_point_drag_route_id is not None and self._route_point_drag_index is not None:
+            if self._left_press_pos is not None and not self._left_dragging:
+                delta_from_press = event.position() - self._left_press_pos
+                app = QApplication.instance()
+                threshold = app.startDragDistance() if app is not None else QApplication.startDragDistance()
+                threshold = max(1, int(threshold))
+                if max(abs(delta_from_press.x()), abs(delta_from_press.y())) < threshold:
+                    event.accept()
+                    return
+                self._left_dragging = True
+
+            mapped = self._hover_map_pos
+            if mapped is not None:
+                current = (int(mapped[0]), int(mapped[1]))
+                if current != self._route_point_drag_current_map:
+                    self._route_point_drag_current_map = current
+                    self.route_point_move_requested.emit(
+                        self._route_point_drag_route_id,
+                        self._route_point_drag_index,
+                        current[0],
+                        current[1],
+                    )
+            event.accept()
+            return
+
         if self._is_drawing_active() and not self._is_drawing_paused():
             self.update()
 
@@ -417,6 +567,42 @@ class MapView(QWidget):
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
+            if self._drawing_drag_index is not None:
+                index = self._drawing_drag_index
+                before = self._drawing_drag_start_map
+                after = self._drawing_drag_current_map
+                self._reset_drawing_node_drag()
+                self._drag_last_pos = None
+                self._left_press_pos = None
+                self._left_press_map = None
+                self._left_dragging = False
+                if before is not None and after is not None:
+                    self.drawing_point_move_finished.emit(index, before[0], before[1], after[0], after[1])
+                event.accept()
+                return
+
+            if self._route_point_drag_route_id is not None and self._route_point_drag_index is not None:
+                route_id = self._route_point_drag_route_id
+                index = self._route_point_drag_index
+                before = self._route_point_drag_start_map
+                after = self._route_point_drag_current_map
+                self._reset_route_point_drag()
+                self._drag_last_pos = None
+                self._left_press_pos = None
+                self._left_press_map = None
+                self._left_dragging = False
+                if before is not None and after is not None:
+                    self.route_point_move_finished.emit(
+                        route_id,
+                        index,
+                        before[0],
+                        before[1],
+                        after[0],
+                        after[1],
+                    )
+                event.accept()
+                return
+
             mapped = self._widget_to_map(event.position())
             should_add = (
                 self._is_drawing_active()
@@ -524,6 +710,17 @@ class MapView(QWidget):
         map_threshold = max(6.0, _HIT_RADIUS_WIDGET_PX * ratio)
         return self.route_mgr.hit_test_annotation_point(mapped[0], mapped[1], map_threshold)
 
+    def _route_point_undo_context_items(self) -> list[ContextMenuItem]:
+        if self._is_drawing_active() or not self._route_point_move_undo_available:
+            return []
+        return [
+            ContextMenuItem(
+                strings.UNDO_ROUTE_POINT_MOVE_MENU_LABEL,
+                lambda: self.route_point_move_undo_requested.emit(),
+            ),
+            ContextMenuItem.separator_item(),
+        ]
+
     def contextMenuEvent(self, event):
         pos = QPointF(event.pos())
         if self._is_drawing_active():
@@ -587,7 +784,7 @@ class MapView(QWidget):
                 if has_annotation
                 else strings.ADD_POINT_ANNOTATION_MENU_LABEL
             )
-            items = [
+            items = self._route_point_undo_context_items() + [
                 ContextMenuItem(
                     strings.MARK_POINT_UNVISITED_MENU_LABEL if visited else strings.MARK_POINT_VISITED_MENU_LABEL,
                     lambda rid=route_id, idx=point_index, state=not bool(visited):
@@ -631,7 +828,7 @@ class MapView(QWidget):
             show_context_menu(
                 self,
                 event.globalPos(),
-                [
+                self._route_point_undo_context_items() + [
                     ContextMenuItem(
                         strings.MAP_CHANGE_ANNOTATION_MENU_LABEL,
                         lambda tid=type_id, idx=point_index: self.change_annotation_requested.emit(tid, idx),
@@ -661,7 +858,7 @@ class MapView(QWidget):
         show_context_menu(
             self,
             event.globalPos(),
-            [
+            self._route_point_undo_context_items() + [
                 ContextMenuItem(
                     strings.MAP_ADD_ANNOTATION_MENU_LABEL,
                     lambda x=map_x, y=map_y: self.add_annotation_requested.emit(x, y),
@@ -669,6 +866,11 @@ class MapView(QWidget):
                 ContextMenuItem(
                     strings.MAP_ADD_POINT_MENU_LABEL,
                     lambda x=map_x, y=map_y: self.add_point_requested.emit(x, y),
+                ),
+                ContextMenuItem(
+                    strings.MAP_ADD_POINT_WITH_ANNOTATION_MENU_LABEL,
+                    lambda x=map_x, y=map_y: self.add_annotated_point_requested.emit(x, y),
+                    visible=not self._is_drawing_active() and self._route_point_drag_enabled,
                 ),
             ],
             object_name="MapBlankContextMenu",

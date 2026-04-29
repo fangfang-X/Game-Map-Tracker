@@ -78,6 +78,19 @@ def _route_color_from_hex(value: object) -> tuple[int, int, int]:
     return _color_from_hex(value, _DEFAULT_ROUTE_COLOR_HEX)
 
 
+def _normalize_route_color_hex(value: object) -> str | None:
+    raw = str(value or "").strip()
+    if raw.startswith("#"):
+        raw = raw[1:]
+    if len(raw) != 6:
+        return None
+    try:
+        int(raw, 16)
+    except ValueError:
+        return None
+    return f"#{raw.casefold()}"
+
+
 def _color_from_hex(value: object, default: str) -> tuple[int, int, int]:
     raw = str(value or "").strip()
     if raw.startswith("#"):
@@ -828,6 +841,11 @@ class RouteManager:
         self._load_progress()
 
     def color_for(self, key: str) -> tuple[int, int, int]:
+        route = self.route_for_id(key) if hasattr(self, "_route_index_by_id") else None
+        if route is not None:
+            override = _normalize_route_color_hex(route.get("color"))
+            if override is not None:
+                return _route_color_from_hex(override)
         if not bool(getattr(config, "ROUTE_MULTI_COLOR_ENABLED", True)):
             return _route_color_from_hex(getattr(config, "ROUTE_DEFAULT_COLOR", _DEFAULT_ROUTE_COLOR_HEX))
         if key not in self._color_cache:
@@ -864,6 +882,15 @@ class RouteManager:
                 icon = cv2.resize(icon, (_POINT_ICON_SIZE, _POINT_ICON_SIZE), interpolation=cv2.INTER_AREA)
         self._point_icon_cache[key] = icon
         return icon
+
+    def point_icon_path_for(self, type_id: object) -> str:
+        key = str(type_id or "").strip()
+        if not key:
+            return ""
+        if self._point_icon_index is None:
+            self._point_icon_index = _load_point_icon_index()
+        path = self._point_icon_index.get(key, "")
+        return path if path and os.path.exists(path) else ""
 
     def annotation_icon_for(self, type_id: object) -> np.ndarray | None:
         icon = self.point_icon_for(type_id)
@@ -1538,6 +1565,54 @@ class RouteManager:
             return False
         return bool(str(point.get("typeId") or "").strip() or str(point.get("type") or "").strip())
 
+    def set_point_position(
+        self,
+        route_ref: str,
+        point_index: int,
+        x: int | float,
+        y: int | float,
+        persist: bool = True,
+    ) -> bool:
+        route_id = self.resolve_route_id(route_ref)
+        if route_id is None:
+            return False
+        route = self.route_for_id(route_id)
+        category = self.category_for_route_id(route_id)
+        points = route.get("points", []) if route is not None else []
+        if route is None or category is None or not isinstance(point_index, int) or not (0 <= point_index < len(points)):
+            return False
+        point = points[point_index]
+        if not isinstance(point, dict):
+            return False
+
+        try:
+            next_x = int(round(float(x)))
+            next_y = int(round(float(y)))
+        except (TypeError, ValueError):
+            return False
+
+        old_x = point.get("x", None)
+        old_y = point.get("y", None)
+        point["x"] = next_x
+        point["y"] = next_y
+        if not persist:
+            return True
+
+        try:
+            self._write_route_file(category, route.get("display_name", ""), route)
+        except Exception as e:
+            if old_x is None:
+                point.pop("x", None)
+            else:
+                point["x"] = old_x
+            if old_y is None:
+                point.pop("y", None)
+            else:
+                point["y"] = old_y
+            print(f"Set point position failed route_id={route_id} index={point_index}: {e}")
+            return False
+        return True
+
     def set_point_annotation(self, route_ref: str, point_index: int, type_id: str, type_name: str) -> bool:
         route_id = self.resolve_route_id(route_ref)
         if route_id is None:
@@ -1840,6 +1915,15 @@ class RouteManager:
             return ""
         return notes if isinstance(notes, str) else str(notes)
 
+    def route_color_override(self, route_ref: str) -> str:
+        route_id = self.resolve_route_id(route_ref)
+        if route_id is None:
+            return ""
+        route = self.route_for_id(route_id)
+        if route is None:
+            return ""
+        return _normalize_route_color_hex(route.get("color")) or ""
+
     def update_route_notes(self, category: str, name: str, notes: str) -> bool:
         route = self._find_route(category, name)
         if route is None:
@@ -1850,6 +1934,41 @@ class RouteManager:
         try:
             self._write_route_file(category, name, route)
         except Exception as e:
+            print(f"Save route notes failed {self._route_file_path(category, name)}: {e}")
+            return False
+        return True
+
+    def update_route_notes_and_color(self, category: str, name: str, notes: str, color: object | None) -> bool:
+        route = self._find_route(category, name)
+        if route is None:
+            return False
+
+        normalized_color = None
+        if color is not None and str(color).strip() != "":
+            normalized_color = _normalize_route_color_hex(color)
+            if normalized_color is None:
+                return False
+
+        old_notes = route.get("notes", None)
+        had_color = "color" in route
+        old_color = route.get("color", None)
+        route["notes"] = notes
+        route.setdefault("name", name)
+        if color is None or str(color).strip() == "":
+            route.pop("color", None)
+        else:
+            route["color"] = normalized_color
+        try:
+            self._write_route_file(category, name, route)
+        except Exception as e:
+            if old_notes is None:
+                route.pop("notes", None)
+            else:
+                route["notes"] = old_notes
+            if had_color:
+                route["color"] = old_color
+            else:
+                route.pop("color", None)
             print(f"Save route notes failed {self._route_file_path(category, name)}: {e}")
             return False
         return True
@@ -2242,6 +2361,12 @@ class RouteManager:
         payload["name"] = payload.get("name") or default_name
         notes = payload.get("notes", "")
         payload["notes"] = "" if notes is None else (notes if isinstance(notes, str) else str(notes))
+        if "color" in payload:
+            normalized_color = _normalize_route_color_hex(payload.get("color"))
+            if normalized_color is None:
+                payload.pop("color", None)
+            else:
+                payload["color"] = normalized_color
 
         point_key = "nodes" if route.get("_gmt_points_from_nodes") and "nodes" in payload else "points"
         points: list[object] = []

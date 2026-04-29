@@ -31,15 +31,7 @@ APP_STATUS_NOTICE = "notice"
 APP_STATUS_DISABLED = "disabled"
 APP_STATUS_VALUES = {APP_STATUS_NORMAL, APP_STATUS_NOTICE, APP_STATUS_DISABLED}
 DEFAULT_APP_STATUS_MESSAGE = "请关注最新公告或维护说明。"
-PROTECTED_USER_FILES = {
-    "routes/progress.json",
-    "routes/selected_routes.json",
-    "tools/points_get/.cache_17173_locations.json",
-}
-PROTECTED_USER_PREFIXES = (
-    "routes/",
-    "tools/",
-)
+DEFAULT_MIN_SUPPORTED_VERSION_MESSAGE = "当前版本已停止维护，请更新到最新版后继续使用。"
 RESTART_PATHS = (
     "GMT-N.exe",
     "updater.exe",
@@ -74,6 +66,8 @@ class AppUpdateManifest:
     app_status: str = APP_STATUS_NORMAL
     app_status_message: str = ""
     app_notice_force_prompt: bool = False
+    min_supported_version: str = ""
+    min_supported_version_message: str = ""
     requires_launcher_update: bool = False
     prompt_update: bool = False
     force_update_prompt: bool = False
@@ -97,6 +91,9 @@ class AppUpdateCheckResult:
     app_status: str = APP_STATUS_NORMAL
     app_status_message: str = ""
     app_notice_force_prompt: bool = False
+    min_supported_version: str = ""
+    min_supported_version_message: str = ""
+    requires_min_supported_update: bool = False
     prompt_update: bool = False
     force_update_prompt: bool = False
     notes: str = ""
@@ -186,11 +183,6 @@ def _normalize_relative_path(value: str) -> str:
     return normalized
 
 
-def _is_user_data_path(value: str) -> bool:
-    path = str(value or "").replace("\\", "/")
-    return path in PROTECTED_USER_FILES or any(path.startswith(prefix) for prefix in PROTECTED_USER_PREFIXES)
-
-
 def _app_path(relative_path: str) -> Path:
     return Path(config.app_path(*relative_path.split("/")))
 
@@ -227,6 +219,26 @@ def _dedupe_runtime_strings(values: list[str]) -> list[str]:
     return result
 
 
+def _sanitize_named_links(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    seen: set[tuple[str, str]] = set()
+    result: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        url = str(item.get("url") or "").strip()
+        if not name or not url:
+            continue
+        key = (name, url)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append({"name": name, "url": url})
+    return result
+
+
 def sanitize_runtime_config(payload: Any) -> dict[str, object]:
     if not isinstance(payload, dict):
         return {}
@@ -236,6 +248,10 @@ def sanitize_runtime_config(payload: Any) -> dict[str, object]:
         value = payload.get(key)
         if isinstance(value, str):
             runtime_config[key] = value.strip()
+
+    route_resource_links = _sanitize_named_links(payload.get("ROUTE_RESOURCE_LINKS"))
+    if route_resource_links:
+        runtime_config["ROUTE_RESOURCE_LINKS"] = route_resource_links
 
     manifest_urls: list[str] = []
     legacy_manifest_url = payload.get("APP_UPDATE_MANIFEST_URL")
@@ -282,6 +298,23 @@ def sanitize_app_notice_force_prompt(value: Any) -> bool:
     return value is True
 
 
+def sanitize_min_supported_version(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    try:
+        return normalize_version(value)
+    except ValueError:
+        return ""
+
+
+def sanitize_min_supported_version_message(value: Any, min_supported_version: str) -> str:
+    if not min_supported_version:
+        return ""
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return DEFAULT_MIN_SUPPORTED_VERSION_MESSAGE
+
+
 def app_notice_ack_key(message: str) -> str:
     clean_message = str(message or "").strip()
     return hashlib.sha256(clean_message.encode("utf-8")).hexdigest()
@@ -310,13 +343,16 @@ def parse_app_manifest(payload: dict[str, Any], *, source_base_url: str = "") ->
     app_status = sanitize_app_status(payload.get("app_status"))
     app_status_message = sanitize_app_status_message(payload.get("app_status_message"), app_status)
     app_notice_force_prompt = sanitize_app_notice_force_prompt(payload.get("app_notice_force_prompt"))
+    min_supported_version = sanitize_min_supported_version(payload.get("min_supported_version"))
+    min_supported_version_message = sanitize_min_supported_version_message(
+        payload.get("min_supported_version_message"),
+        min_supported_version,
+    )
     files: list[ManifestFile] = []
     for item in payload.get("files") or []:
         if not isinstance(item, dict):
             continue
         path = _normalize_relative_path(str(item.get("path") or ""))
-        if _is_user_data_path(path):
-            continue
         url = str(item.get("url") or "").strip()
         sha256 = str(item.get("sha256") or "").strip().lower()
         try:
@@ -339,8 +375,6 @@ def parse_app_manifest(payload: dict[str, Any], *, source_base_url: str = "") ->
     delete: list[str] = []
     for item in payload.get("delete") or []:
         path = _normalize_relative_path(str(item or ""))
-        if _is_user_data_path(path) or path == "config.json":
-            continue
         delete.append(path)
 
     obsolete_config_keys: list[str] = []
@@ -362,6 +396,8 @@ def parse_app_manifest(payload: dict[str, Any], *, source_base_url: str = "") ->
         app_status=app_status,
         app_status_message=app_status_message,
         app_notice_force_prompt=app_notice_force_prompt,
+        min_supported_version=min_supported_version,
+        min_supported_version_message=min_supported_version_message,
         requires_launcher_update=bool(payload.get("requires_launcher_update", False)),
         prompt_update=bool(payload.get("prompt_update", False)),
         force_update_prompt=bool(payload.get("force_update_prompt", False)),
@@ -415,18 +451,35 @@ def build_update_plan(
     except ValueError as exc:
         return AppUpdateCheckResult(ok=False, current_version=current_version, error=f"本地版本号无效：{exc}")
 
+    manifest_version_compare = compare_versions(manifest.version, current)
+    if manifest_version_compare < 0:
+        return AppUpdateCheckResult(
+            ok=True,
+            current_version=current,
+            latest_version=manifest.version,
+            has_update=False,
+            app_status=manifest.app_status,
+            app_status_message=manifest.app_status_message,
+            app_notice_force_prompt=manifest.app_notice_force_prompt,
+            min_supported_version=manifest.min_supported_version,
+            min_supported_version_message=manifest.min_supported_version_message,
+            requires_min_supported_update=False,
+            prompt_update=False,
+            force_update_prompt=False,
+            notes=manifest.notes,
+            manifest=manifest,
+        )
+
     installed = installed_manifest if installed_manifest is not None else _load_installed_manifest()
     installed_hashes = _installed_hashes(installed)
     changed: list[FileChange] = []
     conflicts: list[str] = []
     download_size = 0
     requires_restart = manifest.requires_launcher_update
-    manifest_version_newer = compare_versions(manifest.version, current) > 0
+    manifest_version_newer = manifest_version_compare > 0
 
     for file in manifest.files:
         path = file.path
-        if _is_user_data_path(path):
-            continue
         local_path = _app_path(path)
         installed_hash = installed_hashes.get(path)
         if file.install == CONFIG_INSTALL_MODE:
@@ -462,8 +515,6 @@ def build_update_plan(
 
     safe_delete: list[str] = []
     for path in manifest.delete:
-        if _is_user_data_path(path):
-            continue
         local_path = _app_path(path)
         if not local_path.exists():
             continue
@@ -480,6 +531,10 @@ def build_update_plan(
         requires_restart = requires_restart or _is_restart_file(path, manifest)
 
     has_update = bool(changed or safe_delete or manifest_version_newer)
+    requires_min_supported_update = bool(
+        manifest.min_supported_version
+        and compare_versions(current, manifest.min_supported_version) < 0
+    )
     return AppUpdateCheckResult(
         ok=True,
         current_version=current,
@@ -488,6 +543,9 @@ def build_update_plan(
         app_status=manifest.app_status,
         app_status_message=manifest.app_status_message,
         app_notice_force_prompt=manifest.app_notice_force_prompt,
+        min_supported_version=manifest.min_supported_version,
+        min_supported_version_message=manifest.min_supported_version_message,
+        requires_min_supported_update=requires_min_supported_update,
         prompt_update=manifest.prompt_update,
         force_update_prompt=manifest.force_update_prompt,
         notes=manifest.notes,
@@ -747,7 +805,6 @@ def _write_installed_manifest(manifest: AppUpdateManifest) -> None:
                 "install": file.install,
             }
             for file in manifest.files
-            if not _is_user_data_path(file.path)
         },
     }
     _write_json_file(str(_app_path(INSTALLED_MANIFEST)), payload)
@@ -762,7 +819,6 @@ def _manifest_files_payload(manifest: AppUpdateManifest) -> list[dict]:
             "install": file.install,
         }
         for file in manifest.files
-        if not _is_user_data_path(file.path)
     ]
 
 
