@@ -1,11 +1,11 @@
 {
   "id": "0f7e6cb77f2e4421ad2e6f0856657ec7",
   "generatedAt": "2026-04-30T17:20:01.891282+00:00",
-  "mapId": 4010,
   "format_version": "GMT-N-0.1.3",
   "enable_versions": [
     "GMT-N-0.1.3"
   ],
+  "mapId": 4010,
   "types": [
     {
       "typeId": "17310030001",

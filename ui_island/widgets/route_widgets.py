@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from base import TrackState
+from ui_island.state.tracking import TrackState
 
 from ..design import strings, tokens
 from .factory import make_route_panel_icon_button, make_route_panel_line_edit

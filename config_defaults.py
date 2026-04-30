@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-CONFIG_VERSION = 2
+CONFIG_VERSION = 5
 
 DEFAULT_CONFIG = {
     "CONFIG_VERSION": CONFIG_VERSION,
@@ -15,7 +15,9 @@ DEFAULT_CONFIG = {
     "SIDEBAR_WIDTH": 270,
     "PAUSED_SIDEBAR_WIDTH": 270,
     "VIEW_SIZE": 400,
-    "LOGIC_MAP_PATH": "big_map.png",
+    "MAP_FILE": "maps/卡洛西亚大陆/big_map_17173.png",
+    "LOGIC_MAP_PATH": "maps/卡洛西亚大陆/big_map_17173.png",
+    "ANNOTATION_FILE": "annotations/points.json",
     "MAX_LOST_FRAMES": 30,
     "SIFT_REFRESH_RATE": 30,
     "SIFT_CLAHE_LIMIT": 3.0,

@@ -622,6 +622,41 @@ QScrollArea#SidebarOverlayScroll > QWidget > QWidget {{
 QScrollArea > QWidget > QWidget {{
     background: transparent;
 }}
+QScrollArea#RouteNotesNodeScroll,
+QScrollArea#RouteNotesStatsScroll {{
+    background: transparent;
+    border: none;
+}}
+QScrollArea#RouteNotesNodeScroll QScrollBar:vertical,
+QScrollArea#RouteNotesStatsScroll QScrollBar:vertical {{
+    background: transparent;
+    width: 10px;
+    margin: 0px;
+}}
+QScrollArea#RouteNotesNodeScroll QScrollBar::handle:vertical,
+QScrollArea#RouteNotesStatsScroll QScrollBar::handle:vertical {{
+    background: rgba(255, 255, 255, 0.42);
+    border-radius: 5px;
+    min-height: 24px;
+}}
+QScrollArea#RouteNotesNodeScroll QScrollBar::handle:vertical:hover,
+QScrollArea#RouteNotesStatsScroll QScrollBar::handle:vertical:hover {{
+    background: rgba(255, 255, 255, 0.58);
+}}
+QScrollArea#RouteNotesNodeScroll QScrollBar::add-line:vertical,
+QScrollArea#RouteNotesNodeScroll QScrollBar::sub-line:vertical,
+QScrollArea#RouteNotesStatsScroll QScrollBar::add-line:vertical,
+QScrollArea#RouteNotesStatsScroll QScrollBar::sub-line:vertical {{
+    height: 0px;
+    background: transparent;
+    border: none;
+}}
+QScrollArea#RouteNotesNodeScroll QScrollBar::add-page:vertical,
+QScrollArea#RouteNotesNodeScroll QScrollBar::sub-page:vertical,
+QScrollArea#RouteNotesStatsScroll QScrollBar::add-page:vertical,
+QScrollArea#RouteNotesStatsScroll QScrollBar::sub-page:vertical {{
+    background: transparent;
+}}
 QScrollBar:vertical {{
     background: transparent;
     width: 6px;

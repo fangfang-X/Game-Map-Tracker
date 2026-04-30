@@ -20,6 +20,8 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 import config
+from ui_island.services import resource_metadata
+from ui_island.services.image_io import imread_unicode
 from tools.route_point_optimizer import best_insertion_index, optimize_route_points, total_route_length
 
 _CLOSE_THRESHOLD = 20
@@ -36,9 +38,6 @@ _VISIBILITY_FILE = "selected_routes.json"
 _ALGORITHM_CATEGORY = "算法生成"
 _ALGORITHM_ROUTE_SUFFIX = "_路线(算法生成)"
 _INVALID_FILE_NAME_CHARS = set('<>:"/\\|?*')
-_ROUTE_ID_LENGTH = 13
-_ROUTE_ID_MIN = 10 ** (_ROUTE_ID_LENGTH - 1)
-_ROUTE_ID_RANGE = 9 * _ROUTE_ID_MIN
 _POINT_ICON_SIZE = 24
 _POINT_ICON_VISITED_ALPHA = 0.35
 _ANNOTATION_ICON_SIZE = 20
@@ -171,7 +170,42 @@ def _default_point_icon_dir() -> str:
 
 
 def _default_annotation_points_file() -> str:
-    return os.path.join(_project_root(), "tools", "points_all", "points.json")
+    return config.selected_annotation_path_from_settings()
+
+
+def _ensure_route_metadata(payload: dict) -> dict:
+    resource_metadata.ensure_metadata(
+        payload,
+        include_id=False,
+        include_route_defaults=True,
+    )
+    return payload
+
+
+def _ensure_annotation_metadata(payload: dict) -> dict:
+    return resource_metadata.ensure_metadata(
+        payload,
+        include_id=True,
+    )
+
+
+_ROUTE_PAYLOAD_KEY_ORDER = (
+    "id",
+    "format_version",
+    "enable_versions",
+    "color",
+    "name",
+    "notes",
+    "loop",
+    "points",
+    "nodes",
+)
+
+
+def _ordered_route_payload(payload: dict) -> dict:
+    ordered = {key: payload[key] for key in _ROUTE_PAYLOAD_KEY_ORDER if key in payload}
+    ordered.update((key, value) for key, value in payload.items() if key not in ordered)
+    return ordered
 
 
 def _point_xy(point: dict) -> tuple[float, float] | None:
@@ -179,6 +213,27 @@ def _point_xy(point: dict) -> tuple[float, float] | None:
         return float(point["x"]), float(point["y"])
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def _adapter_to_current(
+    coord_adapter,
+    xy: tuple[float, float],
+) -> tuple[float, float]:
+    _ = coord_adapter
+    return xy
+
+
+def _adapter_to_internal(
+    coord_adapter,
+    xy: tuple[float, float],
+) -> tuple[float, float]:
+    _ = coord_adapter
+    return xy
+
+
+def _routes_with_current_coords(routes: Iterable[dict], coord_adapter) -> list[dict]:
+    _ = coord_adapter
+    return list(routes)
 
 
 def _node_type(point: dict | None) -> str:
@@ -832,6 +887,8 @@ class RouteManager:
         self._point_icon_cache: dict[str, np.ndarray | None] = {}
         self._annotation_points_cache: dict[str, list[dict]] | None = None
         self._annotation_type_ids: set[str] = set()
+        self._resource_warning_counts: dict[str, int] = {}
+        self._resource_warning_examples: dict[str, list[str]] = {}
 
         self._discover_categories()
         self._ensure_route_ids()
@@ -839,6 +896,67 @@ class RouteManager:
         self._assign_route_colors()
         self._load_visibility()
         self._load_progress()
+
+    def _record_resource_warning(self, key: str, example: str = "") -> None:
+        self._resource_warning_counts[key] = self._resource_warning_counts.get(key, 0) + 1
+        if example:
+            examples = self._resource_warning_examples.setdefault(key, [])
+            if len(examples) < 5 and example not in examples:
+                examples.append(example)
+
+    def _validate_route_metadata(self, route: dict, display_name: str) -> None:
+        if not isinstance(route, dict):
+            return
+        if not str(route.get("format_version") or "").strip():
+            self._record_resource_warning("route_missing_format", display_name)
+        enable_versions = route.get("enable_versions")
+        if not isinstance(enable_versions, list):
+            self._record_resource_warning("route_missing_version", display_name)
+        elif resource_metadata.APP_FORMAT_VERSION not in [str(item) for item in enable_versions]:
+            self._record_resource_warning("route_incompatible_version", display_name)
+
+
+    def annotation_metadata_warnings(self) -> list[str]:
+        rel = config.selected_annotation_file_from_settings()
+        path = config.selected_annotation_path_from_settings()
+        if not os.path.exists(path):
+            return [f"未找到标注数据文件：{rel}"]
+        try:
+            with open(path, "r", encoding="utf-8-sig") as handle:
+                payload = json.load(handle)
+        except Exception as exc:
+            return [f"标注数据文件读取失败：{rel} ({exc})"]
+        if not isinstance(payload, dict):
+            return [f"标注数据文件格式无效：{rel}"]
+
+        warnings: list[str] = []
+        if not str(payload.get("format_version") or "").strip():
+            warnings.append(f"标注数据文件缺少 format_version：{rel}")
+        enable_versions = payload.get("enable_versions")
+        if not isinstance(enable_versions, list):
+            warnings.append(f"标注数据文件缺少 enable_versions：{rel}")
+        elif resource_metadata.APP_FORMAT_VERSION not in [str(item) for item in enable_versions]:
+            warnings.append(f"标注数据文件版本可能不兼容：{rel}")
+
+        return warnings
+
+    def route_metadata_warnings(self) -> list[str]:
+        labels = {
+            "route_missing_format": "路线缺少 format_version",
+            "route_missing_version": "路线缺少 enable_versions",
+            "route_incompatible_version": "路线版本可能不兼容",
+        }
+        warnings: list[str] = []
+        for key, label in labels.items():
+            count = self._resource_warning_counts.get(key, 0)
+            if count <= 0:
+                continue
+            examples = self._resource_warning_examples.get(key, [])
+            suffix = f"：{', '.join(examples)}" if examples else ""
+            if count > len(examples):
+                suffix += f" 等 {count} 条"
+            warnings.append(f"{label}{suffix}")
+        return warnings
 
     def color_for(self, key: str) -> tuple[int, int, int]:
         route = self.route_for_id(key) if hasattr(self, "_route_index_by_id") else None
@@ -877,7 +995,7 @@ class RouteManager:
         path = self._point_icon_index.get(key)
         icon = None
         if path and os.path.exists(path):
-            icon = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+            icon = imread_unicode(path, cv2.IMREAD_UNCHANGED)
             if icon is not None:
                 icon = cv2.resize(icon, (_POINT_ICON_SIZE, _POINT_ICON_SIZE), interpolation=cv2.INTER_AREA)
         self._point_icon_cache[key] = icon
@@ -931,6 +1049,7 @@ class RouteManager:
     def _write_annotation_payload(self, file_path: str, payload: dict) -> bool:
         tmp_path = f"{file_path}.tmp"
         try:
+            _ensure_annotation_metadata(payload)
             with open(tmp_path, "w", encoding="utf-8") as handle:
                 json.dump(payload, handle, indent=2, ensure_ascii=False)
             os.replace(tmp_path, file_path)
@@ -967,7 +1086,7 @@ class RouteManager:
     def new_route_point_id() -> str:
         return _new_route_point_id()
 
-    def annotation_point(self, type_id: str, point_index: int) -> dict | None:
+    def annotation_point(self, type_id: str, point_index: int, coord_adapter=None) -> dict | None:
         type_id = str(type_id or "").strip()
         if not type_id or not isinstance(point_index, int):
             return None
@@ -982,10 +1101,20 @@ class RouteManager:
         if not isinstance(point, dict) or _point_xy(point) is None:
             return None
         copied = dict(point)
+        if coord_adapter is not None:
+            xy = _point_xy(copied)
+            if xy is not None:
+                copied["x"], copied["y"] = coord_adapter.to_current(xy[0], xy[1])
         copied.setdefault("typeId", type_id)
         return copied
 
-    def hit_test_annotation_point(self, map_x: float, map_y: float, threshold: float) -> dict | None:
+    def hit_test_annotation_point(
+        self,
+        map_x: float,
+        map_y: float,
+        threshold: float,
+        coord_adapter=None,
+    ) -> dict | None:
         if threshold <= 0 or not self._annotation_type_ids:
             return None
         loaded = self._load_annotation_payload()
@@ -1005,7 +1134,8 @@ class RouteManager:
                 xy = _point_xy(point)
                 if xy is None:
                     continue
-                dist = math.hypot(xy[0] - map_x, xy[1] - map_y)
+                current_xy = _adapter_to_current(coord_adapter, xy)
+                dist = math.hypot(current_xy[0] - map_x, current_xy[1] - map_y)
                 if dist > threshold:
                     continue
                 if best is None or dist < best[0]:
@@ -1021,7 +1151,7 @@ class RouteManager:
             "distance": dist,
         }
 
-    def add_annotation_point(self, x: int, y: int, type_id: str, type_name: str) -> bool:
+    def add_annotation_point(self, x: int, y: int, type_id: str, type_name: str, coord_adapter=None) -> bool:
         type_id = str(type_id or "").strip()
         if not type_id:
             return False
@@ -1046,9 +1176,10 @@ class RouteManager:
 
         name = str(type_name or type_meta.get("type") or type_id).strip() or type_id
         try:
+            resource_x, resource_y = _adapter_to_internal(coord_adapter, (float(x), float(y)))
             point = {
-                "x": int(round(float(x))),
-                "y": int(round(float(y))),
+                "x": int(round(resource_x)),
+                "y": int(round(resource_y)),
                 "label": name,
                 "type": name,
                 "typeId": type_id,
@@ -1134,8 +1265,17 @@ class RouteManager:
             raise ValueError("标注类型无效")
 
         source_name = str(type_name or type_id).strip() or type_id
+        loaded = self._load_annotation_payload()
+        if self._annotation_points_cache is not None:
+            annotation_payload = {"pointsByType": self._annotation_points_cache}
+        elif loaded is None:
+            annotation_payload = {"pointsByType": self.annotation_points()}
+        else:
+            _file_path, annotation_payload = loaded
         points = []
-        for point in self.annotation_points().get(type_id, []):
+        points_by_type = annotation_payload.get("pointsByType", {})
+        source_points = points_by_type.get(type_id, []) if isinstance(points_by_type, dict) else []
+        for point in source_points:
             if not isinstance(point, dict):
                 continue
             xy = _point_xy(point)
@@ -1177,8 +1317,9 @@ class RouteManager:
             "loop": False,
             "points": optimized_points,
         }
+        _ensure_route_metadata(payload)
 
-        self._write_json_file(path, payload)
+        self._write_json_file(path, _ordered_route_payload(payload))
 
         route = dict(payload)
         route["display_name"] = route_name
@@ -1208,11 +1349,13 @@ class RouteManager:
         vy1: int,
         width: int,
         height: int,
+        coord_adapter=None,
     ) -> dict[str, str] | None:
         if player_x is None or player_y is None:
             return None
+        guide_routes = _routes_with_current_coords(self.visible_routes(), coord_adapter)
         target = _guide_target_for_player(
-            self.visible_routes(),
+            guide_routes,
             (float(player_x), float(player_y)),
             _config_int("ROUTE_GUIDE_NODE_DISTANCE", 80),
             _config_int("ROUTE_GUIDE_SEGMENT_DISTANCE", 35),
@@ -1227,7 +1370,10 @@ class RouteManager:
         )
         if target is None or label is None:
             return None
-        teleport_label = _nearest_teleport_label(self.teleport_points(), target.xy)
+        teleport_label = _nearest_teleport_label(
+            self.teleport_points(),
+            _adapter_to_internal(coord_adapter, target.xy),
+        )
         hint: dict[str, str] = {"distance_label": label}
         if teleport_label:
             hint["teleport_label"] = teleport_label
@@ -1264,11 +1410,13 @@ class RouteManager:
             "category": category,
         }
 
-    def suggest_insertion_index(self, route_id: str, x: float, y: float) -> int | None:
+    def suggest_insertion_index(self, route_id: str, x: float, y: float, coord_adapter=None) -> int | None:
         route = self.route_for_id(route_id)
         if route is None:
             return None
-        return _best_insertion_index(route.get("points", []) or [], (x, y))
+        points = route.get("points", []) or []
+        _ = coord_adapter
+        return _best_insertion_index(points, (x, y))
 
     def hit_test_point(
         self,
@@ -1276,6 +1424,7 @@ class RouteManager:
         map_y: float,
         threshold: float,
         route_ids: list[str] | None = None,
+        coord_adapter=None,
     ) -> tuple[str, int] | None:
         """在给定 map 坐标附近查找最近的路线节点。
         route_ids=None 时只在可见路线中查找;threshold 为 map 像素距离上限。
@@ -1307,6 +1456,7 @@ class RouteManager:
                     py = float(point["y"])
                 except (KeyError, TypeError, ValueError):
                     continue
+                px, py = _adapter_to_current(coord_adapter, (px, py))
                 dist = math.hypot(px - map_x, py - map_y)
                 if dist > threshold:
                     continue
@@ -1384,6 +1534,7 @@ class RouteManager:
         route_ids: list[str],
         overrides: dict[str, int] | None = None,
         point_fields: dict | None = None,
+        coord_adapter=None,
     ) -> dict[str, int | None]:
         """为每个 route_id 在最佳位置插入 (x, y) 节点并写回 JSON。
         overrides: route_id -> 强制 index(0-based),超出范围会 clamp。
@@ -1404,24 +1555,37 @@ class RouteManager:
             if points is None:
                 points = []
                 route["points"] = points
+            resource_x, resource_y = _adapter_to_internal(coord_adapter, (float(x), float(y)))
+            insertion_points = points
+            if coord_adapter is not None:
+                insertion_points = []
+                for point in points:
+                    if not isinstance(point, dict):
+                        continue
+                    copied = dict(point)
+                    xy = _point_xy(copied)
+                    if xy is None:
+                        continue
+                    copied["x"], copied["y"] = coord_adapter.to_current(xy[0], xy[1])
+                    insertion_points.append(copied)
 
             if route_id in overrides:
                 raw = overrides[route_id]
                 try:
                     index = int(raw)
                 except (TypeError, ValueError):
-                    index = _best_insertion_index(points, (x, y))
+                    index = _best_insertion_index(insertion_points, (x, y))
                 index = max(0, min(len(points), index))
             else:
-                index = _best_insertion_index(points, (x, y))
+                index = _best_insertion_index(insertion_points, (x, y))
 
             new_point = {"id": self.new_route_point_id()}
             for key in ("label", "type", "typeId", "radius", "sourceId", "manual", "node_type"):
                 if isinstance(point_fields, dict) and key in point_fields:
                     new_point[key] = point_fields[key]
             new_point["node_type"] = _node_type(new_point)
-            new_point["x"] = int(x)
-            new_point["y"] = int(y)
+            new_point["x"] = int(round(resource_x))
+            new_point["y"] = int(round(resource_y))
             new_point["visited"] = False
             points.insert(index, new_point)
 
@@ -1572,6 +1736,7 @@ class RouteManager:
         x: int | float,
         y: int | float,
         persist: bool = True,
+        coord_adapter=None,
     ) -> bool:
         route_id = self.resolve_route_id(route_ref)
         if route_id is None:
@@ -1586,8 +1751,9 @@ class RouteManager:
             return False
 
         try:
-            next_x = int(round(float(x)))
-            next_y = int(round(float(y)))
+            resource_x, resource_y = _adapter_to_internal(coord_adapter, (float(x), float(y)))
+            next_x = int(round(resource_x))
+            next_y = int(round(resource_y))
         except (TypeError, ValueError):
             return False
 
@@ -1611,6 +1777,50 @@ class RouteManager:
                 point["y"] = old_y
             print(f"Set point position failed route_id={route_id} index={point_index}: {e}")
             return False
+        return True
+
+    def reorder_route_point(self, route_ref: str, from_index: int, to_index: int) -> bool:
+        route_id = self.resolve_route_id(route_ref)
+        if route_id is None:
+            return False
+        route = self.route_for_id(route_id)
+        category = self.category_for_route_id(route_id)
+        points = route.get("points", []) if route is not None else []
+        if (
+            route is None
+            or category is None
+            or not isinstance(points, list)
+            or not isinstance(from_index, int)
+            or isinstance(from_index, bool)
+            or not (0 <= from_index < len(points))
+        ):
+            return False
+        if not points:
+            return False
+        if isinstance(to_index, bool):
+            return False
+        try:
+            target = int(to_index)
+        except (TypeError, ValueError):
+            return False
+        target = max(0, min(len(points) - 1, target))
+        if from_index == target:
+            return False
+
+        old_points = list(points)
+        point = points.pop(from_index)
+        points.insert(target, point)
+        try:
+            self._write_route_file(category, route.get("display_name", ""), route)
+        except Exception as e:
+            route["points"] = old_points
+            print(f"Reorder route point failed route_id={route_id} from={from_index} to={target}: {e}")
+            return False
+
+        try:
+            self.save_progress()
+        except Exception as e:
+            print(f"Save progress after point reorder failed: {e}")
         return True
 
     def set_point_annotation(self, route_ref: str, point_index: int, type_id: str, type_name: str) -> bool:
@@ -1724,6 +1934,8 @@ class RouteManager:
         self._route_index_by_id = {}
         self._category_by_route_id = {}
         self._generated_route_ids = set()
+        self._resource_warning_counts = {}
+        self._resource_warning_examples = {}
         self._discover_categories()
         self._ensure_route_ids()
         self._load_all_routes()
@@ -1816,8 +2028,9 @@ class RouteManager:
             "loop": False,
             "points": [],
         }
+        _ensure_route_metadata(payload)
         try:
-            self._write_json_file(path, payload)
+            self._write_json_file(path, _ordered_route_payload(payload))
         except Exception as e:
             print(f"Create route failed {path}: {e}")
             return False
@@ -1938,7 +2151,13 @@ class RouteManager:
             return False
         return True
 
-    def update_route_notes_and_color(self, category: str, name: str, notes: str, color: object | None) -> bool:
+    def update_route_notes_and_color(
+        self,
+        category: str,
+        name: str,
+        notes: str,
+        color: object | None,
+    ) -> bool:
         route = self._find_route(category, name)
         if route is None:
             return False
@@ -1983,13 +2202,14 @@ class RouteManager:
         player_y=None,
         drawing_route: dict | None = None,
         auto_visit: bool = True,
+        coord_adapter=None,
     ) -> None:
         local_player = None
         if player_x is not None and player_y is not None:
             local_player = (int(player_x - vx1), int(player_y - vy1))
 
         canvas_height, canvas_width = canvas.shape[:2]
-        self._draw_annotations(canvas, vx1, vy1, canvas_width, canvas_height)
+        self._draw_annotations(canvas, vx1, vy1, canvas_width, canvas_height, coord_adapter=coord_adapter)
         visible_routes = [
             route
             for _category, route in self.iter_routes()
@@ -2018,7 +2238,8 @@ class RouteManager:
                 if xy is None:
                     local_points.append(None)
                 else:
-                    local_points.append((int(xy[0] - vx1), int(xy[1] - vy1)))
+                    current_xy = _adapter_to_current(coord_adapter, xy)
+                    local_points.append((int(current_xy[0] - vx1), int(current_xy[1] - vy1)))
             is_drawing_route = drawing_route is not None and route is drawing_route
             draw_records.append((route, color, local_points, points, is_drawing_route))
 
@@ -2052,8 +2273,9 @@ class RouteManager:
                         point_data["visited"] = True
 
         if player_x is not None and player_y is not None:
+            guide_current_routes = _routes_with_current_coords(guide_routes, coord_adapter)
             target = _guide_target_for_player(
-                guide_routes,
+                guide_current_routes,
                 (float(player_x), float(player_y)),
                 _config_int("ROUTE_GUIDE_NODE_DISTANCE", 80),
                 _config_int("ROUTE_GUIDE_SEGMENT_DISTANCE", 35),
@@ -2127,10 +2349,20 @@ class RouteManager:
                     cv2.LINE_AA,
                 )
 
-    def _draw_annotations(self, canvas, vx1, vy1, canvas_width: int, canvas_height: int) -> None:
+    def _draw_annotations(
+        self,
+        canvas,
+        vx1,
+        vy1,
+        canvas_width: int,
+        canvas_height: int,
+        *,
+        coord_adapter=None,
+    ) -> None:
         if not self._annotation_type_ids:
             return
         points_by_type = self.annotation_points()
+        loaded = self._load_annotation_payload()
         for type_id in sorted(self._annotation_type_ids):
             icon = self.annotation_icon_for(type_id)
             if icon is None:
@@ -2139,7 +2371,8 @@ class RouteManager:
                 xy = _point_xy(point)
                 if xy is None:
                     continue
-                local_point = (int(xy[0] - vx1), int(xy[1] - vy1))
+                current_xy = _adapter_to_current(coord_adapter, xy)
+                local_point = (int(current_xy[0] - vx1), int(current_xy[1] - vy1))
                 if not (0 <= local_point[0] <= canvas_width and 0 <= local_point[1] <= canvas_height):
                     continue
                 _overlay_bgra_icon(canvas, icon, local_point, opacity=1.0)
@@ -2202,7 +2435,7 @@ class RouteManager:
             route_id = self._allocate_route_id(used_ids)
             data["id"] = route_id
             try:
-                self._write_json_file(path, data)
+                self._write_json_file(path, _ordered_route_payload(data))
             except Exception as e:
                 print(f"Write route id migration failed {path}: {e}")
 
@@ -2220,6 +2453,7 @@ class RouteManager:
                     route_name = os.path.splitext(file_name)[0]
                     with open(path, "r", encoding="utf-8") as handle:
                         data = json.load(handle)
+                    self._validate_route_metadata(data, route_name)
 
                     has_edges = _has_external_edges(data)
                     if has_edges:
@@ -2235,7 +2469,7 @@ class RouteManager:
                         route_id = self._allocate_route_id(used_ids)
                         data["id"] = route_id
                         if not has_edges:
-                            self._write_json_file(path, data)
+                            self._write_json_file(path, _ordered_route_payload(data))
                     else:
                         used_ids.add(route_id)
 
@@ -2361,6 +2595,8 @@ class RouteManager:
         payload["name"] = payload.get("name") or default_name
         notes = payload.get("notes", "")
         payload["notes"] = "" if notes is None else (notes if isinstance(notes, str) else str(notes))
+        payload.pop("annotation_hash", None)
+        _ensure_route_metadata(payload)
         if "color" in payload:
             normalized_color = _normalize_route_color_hex(payload.get("color"))
             if normalized_color is None:
@@ -2381,7 +2617,7 @@ class RouteManager:
                 payload["points"] = route.get("_gmt_original_points")
             else:
                 payload.pop("points", None)
-        return payload
+        return _ordered_route_payload(payload)
 
     def _find_route(self, category: str, name: str) -> dict | None:
         for route in self.route_groups.get(category, []):
@@ -2424,7 +2660,7 @@ class RouteManager:
 
     @staticmethod
     def _new_random_route_id() -> str:
-        return str(_ROUTE_ID_MIN + secrets.randbelow(_ROUTE_ID_RANGE))
+        return str(1_000_000_000_000 + secrets.randbelow(9_000_000_000_000))
 
     @staticmethod
     def _write_json_file(path: str, payload: dict) -> None:
@@ -2448,4 +2684,9 @@ class RouteManager:
 
     @staticmethod
     def _is_valid_route_id(value: object) -> bool:
-        return isinstance(value, str) and len(value) >= 10 and value.isdigit()
+        if not isinstance(value, str):
+            return False
+        raw = value.strip()
+        if len(raw) >= 10 and raw.isdigit():
+            return True
+        return bool(resource_metadata.HASH_RE.fullmatch(raw.casefold()))

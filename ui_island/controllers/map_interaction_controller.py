@@ -9,6 +9,7 @@ from ..design import strings
 from ..dialogs import toast
 from ..dialogs.annotation_type_picker import open_annotation_type_picker
 from ..dialogs.insert_point_dialog import open_insert_point_dialog
+from ..dialogs.point_order_dialog import open_point_order_dialog
 from ..dialogs.settings_dialog import styled_confirm, styled_info
 from ..services.annotation_preferences import normalize_type_ids
 from ..widgets.node_type_popup import node_type_label, normalize_node_type, show_node_type_popup
@@ -22,8 +23,18 @@ class MapInteractionController:
         self.window = window
         self._last_point_move_undo: dict | None = None
 
+    def _coordinate_adapter(self):
+        getter = getattr(getattr(self.window, "map_view", None), "coordinate_adapter", None)
+        return getter() if callable(getter) else None
+
+    def _set_point_position(self, *args, coord_adapter=None, **kwargs) -> bool:
+        try:
+            return self.window.route_mgr.set_point_position(*args, coord_adapter=coord_adapter, **kwargs)
+        except TypeError:
+            return self.window.route_mgr.set_point_position(*args, **kwargs)
+
     def _refresh_annotation_ui(self) -> None:
-        self.window.annotation_panel.load_index(config.app_path("tools", "points_all", "points.json"))
+        self.window.annotation_panel.load_index(config.selected_annotation_path_from_settings())
         self.window.annotation_panel.set_preferences(self.window.annotation_type_ids)
         try:
             self.window.map_view._refresh_from_last_frame()
@@ -54,7 +65,17 @@ class MapInteractionController:
 
         type_id = str(selected.get("typeId") or "")
         type_name = str(selected.get("type") or type_id)
-        if not route_mgr.add_annotation_point(x, y, type_id, type_name):
+        try:
+            added = route_mgr.add_annotation_point(
+                x,
+                y,
+                type_id,
+                type_name,
+                coord_adapter=self._coordinate_adapter(),
+            )
+        except TypeError:
+            added = route_mgr.add_annotation_point(x, y, type_id, type_name)
+        if not added:
             styled_info(
                 self.window,
                 strings.MAP_ADD_ANNOTATION_FAIL_TITLE,
@@ -132,7 +153,14 @@ class MapInteractionController:
         toast(self.window, strings.MAP_ANNOTATION_CHANGE_SUCCESS_FMT.format(name=new_type_name))
 
     def add_annotation_to_route(self, type_id: str, point_index: int) -> None:
-        point = self.window.route_mgr.annotation_point(type_id, point_index)
+        try:
+            point = self.window.route_mgr.annotation_point(
+                type_id,
+                point_index,
+                coord_adapter=self._coordinate_adapter(),
+            )
+        except TypeError:
+            point = self.window.route_mgr.annotation_point(type_id, point_index)
         if point is None:
             styled_info(
                 self.window,
@@ -149,6 +177,10 @@ class MapInteractionController:
                 strings.MAP_ANNOTATION_FAIL_TITLE,
                 strings.MAP_ANNOTATION_ROUTE_FAIL_BODY,
             )
+            return
+        drawing = getattr(self.window, "route_drawing_state", None)
+        if drawing is not None and drawing.active:
+            self.window.route_panel_controller.append_drawing_point_from_context_menu(x, y, point_fields=point)
             return
         self.add_point_to_routes(x, y, point_fields=point)
 
@@ -211,7 +243,14 @@ class MapInteractionController:
         return self._last_point_move_undo is not None
 
     def move_route_point_preview(self, route_id: str, point_index: int, x: int, y: int) -> None:
-        if not self.window.route_mgr.set_point_position(route_id, point_index, x, y, persist=False):
+        if not self._set_point_position(
+            route_id,
+            point_index,
+            x,
+            y,
+            persist=False,
+            coord_adapter=self._coordinate_adapter(),
+        ):
             return
         self._refresh_route_point_ui()
 
@@ -230,14 +269,16 @@ class MapInteractionController:
             return
 
         route_mgr = self.window.route_mgr
-        route_mgr.set_point_position(route_id, point_index, before[0], before[1], persist=False)
-        if not route_mgr.set_point_position(route_id, point_index, after[0], after[1], persist=True):
-            route_mgr.set_point_position(route_id, point_index, before[0], before[1], persist=False)
+        adapter = self._coordinate_adapter()
+        self._set_point_position(route_id, point_index, before[0], before[1], persist=False, coord_adapter=adapter)
+        if not self._set_point_position(route_id, point_index, after[0], after[1], persist=True, coord_adapter=adapter):
+            self._set_point_position(route_id, point_index, before[0], before[1], persist=False, coord_adapter=adapter)
             self._refresh_route_point_ui()
             styled_info(self.window, strings.POINT_MOVE_FAIL_TITLE, strings.POINT_MOVE_FAIL_BODY)
             return
 
         self._set_point_move_undo({
+            "op": "move",
             "route_id": route_id,
             "point_index": int(point_index),
             "before": before,
@@ -251,6 +292,22 @@ class MapInteractionController:
         if not isinstance(action, dict):
             return
         route_id = str(action.get("route_id") or "")
+        op = str(action.get("op") or "move")
+        if op == "reorder":
+            try:
+                from_index = int(action.get("from_index"))
+                to_index = int(action.get("to_index"))
+            except (TypeError, ValueError):
+                self.clear_route_point_move_undo()
+                return
+            if not self.window.route_mgr.reorder_route_point(route_id, to_index, from_index):
+                styled_info(self.window, strings.POINT_ORDER_FAIL_TITLE, strings.POINT_ORDER_FAIL_BODY)
+                return
+            self.clear_route_point_move_undo()
+            self._refresh_route_point_ui()
+            toast(self.window, strings.POINT_ORDER_UNDO_SUCCESS)
+            return
+
         try:
             point_index = int(action.get("point_index"))
             before = tuple(action.get("before") or ())
@@ -261,13 +318,60 @@ class MapInteractionController:
             self.clear_route_point_move_undo()
             return
 
-        if not self.window.route_mgr.set_point_position(route_id, point_index, before[0], before[1], persist=True):
+        if not self._set_point_position(
+            route_id,
+            point_index,
+            before[0],
+            before[1],
+            persist=True,
+            coord_adapter=self._coordinate_adapter(),
+        ):
             styled_info(self.window, strings.POINT_MOVE_FAIL_TITLE, strings.POINT_MOVE_FAIL_BODY)
             return
 
         self.clear_route_point_move_undo()
         self._refresh_route_point_ui()
         toast(self.window, strings.POINT_MOVE_UNDO_SUCCESS)
+
+    def change_point_order(self, route_id: str, point_index: int) -> None:
+        drawing = getattr(self.window, "route_drawing_state", None)
+        if drawing is not None and drawing.active and route_id == drawing.route_id:
+            self.window.route_panel_controller.change_drawing_point_order(point_index)
+            return
+
+        route_mgr = self.window.route_mgr
+        route = route_mgr.route_for_id(route_id)
+        points = route.get("points", []) if route is not None else []
+        if route is None or not isinstance(points, list) or not isinstance(point_index, int):
+            styled_info(self.window, strings.POINT_ORDER_FAIL_TITLE, strings.POINT_ORDER_FAIL_BODY)
+            return
+        if not (0 <= point_index < len(points)) or len(points) < 2:
+            return
+
+        summary = route_mgr.summarize_route(route_id)
+        route_name = str((summary or {}).get("display_label") or route.get("display_name") or route_id)
+        target = open_point_order_dialog(self.window, route_name, point_index, len(points))
+        if target is None or target == point_index:
+            return
+
+        try:
+            target = max(0, min(len(points) - 1, int(target)))
+        except (TypeError, ValueError):
+            return
+        if target == point_index:
+            return
+        if not route_mgr.reorder_route_point(route_id, point_index, target):
+            styled_info(self.window, strings.POINT_ORDER_FAIL_TITLE, strings.POINT_ORDER_FAIL_BODY)
+            return
+
+        self._set_point_move_undo({
+            "op": "reorder",
+            "route_id": route_id,
+            "from_index": int(point_index),
+            "to_index": int(target),
+        })
+        self._refresh_route_point_ui()
+        toast(self.window, strings.POINT_ORDER_SUCCESS)
 
     def change_point_node_type(self, route_id: str, point_index: int, global_pos) -> None:
         drawing = getattr(self.window, "route_drawing_state", None)
@@ -470,7 +574,15 @@ class MapInteractionController:
             summary = route_mgr.summarize_route(rid)
             if summary is None:
                 continue
-            suggested = route_mgr.suggest_insertion_index(rid, x, y)
+            try:
+                suggested = route_mgr.suggest_insertion_index(
+                    rid,
+                    x,
+                    y,
+                    coord_adapter=self._coordinate_adapter(),
+                )
+            except TypeError:
+                suggested = route_mgr.suggest_insertion_index(rid, x, y)
             if suggested is None:
                 suggested = summary["points_count"]
             candidates.append({
@@ -510,7 +622,23 @@ class MapInteractionController:
             if not confirmed:
                 return
 
-        outcomes = route_mgr.insert_point_into_routes(x, y, selected_ids, overrides, point_fields=point_fields)
+        try:
+            outcomes = route_mgr.insert_point_into_routes(
+                x,
+                y,
+                selected_ids,
+                overrides,
+                point_fields=point_fields,
+                coord_adapter=self._coordinate_adapter(),
+            )
+        except TypeError:
+            outcomes = route_mgr.insert_point_into_routes(
+                x,
+                y,
+                selected_ids,
+                overrides,
+                point_fields=point_fields,
+            )
         ok_count = sum(1 for v in outcomes.values() if v is not None)
         fail_count = len(outcomes) - ok_count
 

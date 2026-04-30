@@ -106,14 +106,14 @@ class AnnotationPanel(QFrame):
         index_path = Path(path)
         if not index_path.exists():
             self._types = []
-            self._message.setText("未找到点位索引，请先运行 python tools/fetch_17173_all_points.py")
+            self._message.setText("未找到标注文件，请在设置中选择或拉取标注数据")
             self._render()
             return
         try:
             payload = json.loads(index_path.read_text(encoding="utf-8"))
         except Exception:
             self._types = []
-            self._message.setText("点位索引读取失败，请重新生成 tools/points_all/points.json")
+            self._message.setText("标注文件读取失败，请重新选择或拉取标注数据")
             self._render()
             return
         types = payload.get("types") if isinstance(payload, dict) else None

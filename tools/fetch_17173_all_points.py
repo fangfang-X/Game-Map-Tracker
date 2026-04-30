@@ -15,6 +15,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from ui_island.services import resource_metadata
+
+try:
+    import config
+except Exception:
+    config = None
+
 try:
     from tools.fetch_17173_points import (
         MAP_ID,
@@ -38,8 +49,7 @@ except ModuleNotFoundError:
         point_label,
     )
 
-OUTPUT_DIR = TOOL_DIR / "points_all"
-OUTPUT_FILE = OUTPUT_DIR / "points.json"
+OUTPUT_DIR = Path(config.ensure_annotations_dir()) if config is not None else ROOT_DIR / "annotations"
 ICON_INDEX_FILE = TOOL_DIR / "points_icon" / "icons.json"
 
 
@@ -86,12 +96,17 @@ def build_all_points_index(locations: list[dict]) -> dict:
             }
         )
 
-    return {
+    payload = {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "mapId": MAP_ID,
         "types": types,
         "pointsByType": {type_id: points_by_type[type_id] for type_id in sorted(points_by_type)},
     }
+    resource_metadata.ensure_metadata(
+        payload,
+        include_id=True,
+    )
+    return payload
 
 
 def write_json(path: Path, payload: object) -> None:
@@ -102,7 +117,7 @@ def write_json(path: Path, payload: object) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="抓取 17173 全部采集点位坐标并生成标注索引")
     parser.add_argument("--refresh", action="store_true", help="忽略点位缓存，重新请求 17173 接口")
-    parser.add_argument("--out", default=str(OUTPUT_FILE), help="输出 JSON 文件路径")
+    parser.add_argument("--out", default="", help="输出 JSON 文件路径；默认在 annotations/ 生成带日期的新文件")
     return parser
 
 
@@ -116,14 +131,15 @@ def main(argv: Iterable[str] | None = None) -> int:
     try:
         locations = fetch_all_locations(use_cache=not args.refresh)
         payload = build_all_points_index(locations)
-        write_json(Path(args.out), payload)
+        output = Path(args.out) if args.out else OUTPUT_DIR / resource_metadata.annotation_output_name(OUTPUT_DIR)
+        write_json(output, payload)
     except Exception as exc:
         print(f"[!] 抓取全部点位失败: {exc}", file=sys.stderr)
         return 1
 
     point_count = sum(len(points) for points in payload["pointsByType"].values())
     print(f"[+] 已导出 {point_count} 个点位，{len(payload['types'])} 个类别")
-    print(f"[+] 点位索引已保存: {Path(args.out).resolve()}")
+    print(f"[+] 点位索引已保存: {output.resolve()}")
     return 0
 
 

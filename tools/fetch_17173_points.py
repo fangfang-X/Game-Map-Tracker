@@ -1,8 +1,7 @@
 """Fetch 17173 map points and export route JSON for this tracker.
 
-This tool uses the fitted formula from the reference scraper.py:
-  x = 5824.0800 * longitude + 7217.5810
-  y = -5822.8413 * latitude + 6602.7721
+This tool projects 17173 latitude/longitude onto the z=13 stitched tile map:
+  big_map_17173.png, 8192x8192, tile range x=4064..4095 and y=4064..4095.
 
 Examples:
   python tools/fetch_17173_points.py 向阳花
@@ -23,6 +22,10 @@ from typing import Iterable
 
 import requests
 
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
 try:
     import config
 except Exception:
@@ -35,11 +38,11 @@ OUTPUT_DIR = TOOL_DIR / "points_get"
 CACHE_FILE = OUTPUT_DIR / ".cache_17173_locations.json"
 ICON_INDEX_FILE = TOOL_DIR / "points_icon" / "icons.json"
 
-# 来自参考 scraper.py 的手工标定拟合公式: 17173 API 坐标 -> 本项目导航地图像素坐标。
-DEFAULT_SCALE_X = 5824.0800
-DEFAULT_OFFSET_X = 7217.5810
-DEFAULT_SCALE_Y = -5822.8413
-DEFAULT_OFFSET_Y = 6602.7721
+TILE_SIZE = 256
+MAP_ZOOM = 13
+MAP_TILE_ORIGIN_X = 4064
+MAP_TILE_ORIGIN_Y = 4064
+MAP_PIXEL_SIZE = 8192
 
 HEADERS = {
     "User-Agent": (
@@ -186,9 +189,17 @@ def _as_float(item: dict, *names: str) -> float:
 
 
 def latlng_to_xy(latitude: float, longitude: float) -> tuple[int, int]:
-    x = DEFAULT_SCALE_X * longitude + DEFAULT_OFFSET_X
-    y = DEFAULT_SCALE_Y * latitude + DEFAULT_OFFSET_Y
-    return int(round(x)), int(round(y))
+    """Project 17173 lat/lng to big_map_17173.png pixel coordinates."""
+    world_size = (2**MAP_ZOOM) * TILE_SIZE
+    global_x = (float(longitude) + 180.0) / 360.0 * world_size
+    lat_rad = math.radians(float(latitude))
+    mercator = math.log(math.tan(lat_rad) + 1.0 / math.cos(lat_rad))
+    global_y = (1.0 - mercator / math.pi) / 2.0 * world_size
+
+    x = int(round(global_x - MAP_TILE_ORIGIN_X * TILE_SIZE))
+    y = int(round(global_y - MAP_TILE_ORIGIN_Y * TILE_SIZE))
+    max_pixel = MAP_PIXEL_SIZE - 1
+    return max(0, min(max_pixel, x)), max(0, min(max_pixel, y))
 
 
 def fetch_all_locations(*, use_cache: bool = True, timeout: int = 30) -> list[dict]:
@@ -332,9 +343,9 @@ def points_to_route(points: list[dict], *, name: str, radius: int, loop: bool) -
 
     notes = (
         f"基于 17173 API mapIds={MAP_ID} 抓取. "
-        "坐标使用参考 scraper.py 的拟合公式转换: "
-        f"x={DEFAULT_SCALE_X:.4f}*longitude+{DEFAULT_OFFSET_X:.4f}, "
-        f"y={DEFAULT_SCALE_Y:.4f}*latitude+{DEFAULT_OFFSET_Y:.4f}. "
+        "坐标使用 17173 z=13 瓦片投影转换到 big_map_17173.png: "
+        f"tile_origin=({MAP_TILE_ORIGIN_X},{MAP_TILE_ORIGIN_Y}), "
+        f"tile_size={TILE_SIZE}, map_size={MAP_PIXEL_SIZE}. "
         f"命中 {len(points)} 个点, 导出 {len(out_points)} 个有效节点."
     )
     return {

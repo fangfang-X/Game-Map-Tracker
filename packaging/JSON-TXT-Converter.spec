@@ -1,25 +1,23 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-hiddenimports = [
-    "Plan_SIFT.sift_tracker",
-    "tools.fetch_17173_all_points",
-    "tools.fetch_17173_icons",
-    "tools.fetch_17173_points",
-    "pynput.keyboard._win32",
-    "pynput.mouse._win32",
-]
+from pathlib import Path
 
+
+SPEC_DIR = Path(SPECPATH).resolve()
+if SPEC_DIR.is_file():
+    SPEC_DIR = SPEC_DIR.parent
+ROOT = SPEC_DIR.parent
 
 a = Analysis(
-    ["main_island.py"],
-    pathex=[],
+    [str(ROOT / "tools" / "json_txt_converter.py")],
+    pathex=[str(ROOT)],
     binaries=[],
     datas=[],
-    hiddenimports=hiddenimports,
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tkinter", "matplotlib"],
+    excludes=["PySide6", "cv2", "PIL", "numpy", "pynput", "requests"],
     noarchive=False,
     optimize=0,
 )
@@ -29,27 +27,20 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
-    name="GMT-N",
+    name="json_txt_converter",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
+    upx_exclude=[],
+    runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-)
-
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name="GMT-N",
 )

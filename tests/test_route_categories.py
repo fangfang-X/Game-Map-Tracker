@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from route_manager import RouteManager
+from ui_island.services.route_manager import RouteManager
 
 
 class RouteCategoryTests(unittest.TestCase):

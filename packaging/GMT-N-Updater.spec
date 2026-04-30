@@ -1,16 +1,23 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from pathlib import Path
+
+
+SPEC_DIR = Path(SPECPATH).resolve()
+if SPEC_DIR.is_file():
+    SPEC_DIR = SPEC_DIR.parent
+ROOT = SPEC_DIR.parent
 
 a = Analysis(
-    ["tools/json_txt_converter.py"],
-    pathex=[],
+    [str(ROOT / "scripts" / "updater_main.py")],
+    pathex=[str(ROOT)],
     binaries=[],
     datas=[],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["PySide6", "cv2", "PIL", "numpy", "pynput", "requests"],
+    excludes=["tkinter", "matplotlib", "PySide6", "cv2", "PIL", "numpy", "pynput"],
     noarchive=False,
     optimize=0,
 )
@@ -23,7 +30,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="json_txt_converter",
+    name="updater",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

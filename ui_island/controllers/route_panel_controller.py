@@ -22,10 +22,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import config
 from ..design import strings, theme
 from ..dialogs import StyledDialogBase, center_dialog, toast
 from ..dialogs.annotation_type_picker import open_annotation_type_picker
 from ..dialogs.insert_point_dialog import open_insert_point_dialog
+from ..dialogs.point_order_dialog import open_point_order_dialog
 from ..dialogs.route_notes_dialog import edit_route_notes
 from ..dialogs.settings_dialog import styled_confirm, styled_info
 from ..dialogs.text_input_dialog import prompt_text_input
@@ -222,6 +224,9 @@ QCheckBox::indicator:checked:hover {{
         self.refresh_tracked_routes()
         self.apply_route_filter()
         self.window.map_view._refresh_from_last_frame()
+        notice = getattr(self.window, "_show_resource_notice", None)
+        if callable(notice):
+            notice()
         self.window.window_mode_controller.schedule_layout_refresh()
 
     def create_route_list_item(self, category: str, route: dict) -> RouteListItem:
@@ -579,7 +584,13 @@ QCheckBox::indicator:checked:hover {{
         route = self.window.route_mgr.route_for_id(state.route_id)
         saved_points = route.get("points", []) if route is not None else self._clean_draft_points()
         saved_loop = bool(route.get("loop", state.loop)) if route is not None else bool(state.loop)
-        state.begin(route_id=state.route_id, category=state.category, name=state.name, points=saved_points, loop=saved_loop)
+        state.begin(
+            route_id=state.route_id,
+            category=state.category,
+            name=state.name,
+            points=saved_points,
+            loop=saved_loop,
+        )
         for key, value in drawing_options.items():
             setattr(state, key, value)
         self._sync_route_drawing_ui()
@@ -637,13 +648,31 @@ QCheckBox::indicator:checked:hover {{
             return "cancel"
         return result["value"]
 
-    def append_drawing_point(self, x: int, y: int, index_override: int | None = None) -> None:
+    @staticmethod
+    def _drawing_point_fields_from_annotation(point_fields: dict | None) -> dict:
+        if not isinstance(point_fields, dict):
+            return {}
+        copied: dict = {}
+        for key in ("label", "type", "typeId", "radius", "sourceId", "manual"):
+            if key in point_fields:
+                copied[key] = point_fields[key]
+        return copied
+
+    def append_drawing_point(
+        self,
+        x: int,
+        y: int,
+        index_override: int | None = None,
+        point_fields: dict | None = None,
+    ) -> None:
         state = self.window.route_drawing_state
         if not state.active or state.paused:
             return
-        annotation = self._drawing_annotation_for_new_point()
+        external_fields = self._drawing_point_fields_from_annotation(point_fields)
+        annotation = external_fields if external_fields else self._drawing_annotation_for_new_point()
         if annotation is False:
             return
+        x, y = self._drawing_resource_xy(x, y)
         point = {
             "id": self.window.route_mgr.new_route_point_id(),
             "x": int(x),
@@ -652,8 +681,12 @@ QCheckBox::indicator:checked:hover {{
             "_drawing_new": True,
         }
         if isinstance(annotation, dict):
-            point["typeId"] = annotation["typeId"]
-            point["type"] = annotation["type"]
+            if "typeId" in annotation:
+                point["typeId"] = annotation["typeId"]
+                point["type"] = annotation.get("type") or annotation["typeId"]
+            for key in ("label", "radius", "sourceId", "manual"):
+                if key in annotation:
+                    point[key] = annotation[key]
         if index_override is None:
             index = self._drawing_insert_index(x, y)
         else:
@@ -668,12 +701,12 @@ QCheckBox::indicator:checked:hover {{
         self._mark_drawing_dirty()
         self._sync_route_drawing_ui()
 
-    def append_drawing_point_from_context_menu(self, x: int, y: int) -> None:
+    def append_drawing_point_from_context_menu(self, x: int, y: int, point_fields: dict | None = None) -> None:
         state = self.window.route_drawing_state
         if not state.active or state.paused:
             return
         if state.insert_at_end:
-            self.append_drawing_point(x, y)
+            self.append_drawing_point(x, y, point_fields=point_fields)
             return
 
         suggested = self._drawing_insert_index(x, y)
@@ -694,7 +727,23 @@ QCheckBox::indicator:checked:hover {{
         selected_ids, overrides = result
         if state.route_id not in selected_ids:
             return
-        self.append_drawing_point(x, y, index_override=overrides.get(state.route_id, suggested))
+        self.append_drawing_point(
+            x,
+            y,
+            index_override=overrides.get(state.route_id, suggested),
+            point_fields=point_fields,
+        )
+
+    def _drawing_resource_xy(self, x: int | float, y: int | float) -> tuple[int, int]:
+        try:
+            getter = getattr(getattr(self.window, "map_view", None), "coordinate_adapter", None)
+            adapter = getter() if callable(getter) else None
+            if adapter is None:
+                return int(round(float(x))), int(round(float(y)))
+            tx, ty = adapter.to_internal(float(x), float(y))
+            return int(round(tx)), int(round(ty))
+        except Exception:
+            return int(x), int(y)
 
     def _drawing_insert_index(self, x: int, y: int) -> int:
         state = self.window.route_drawing_state
@@ -807,6 +856,17 @@ QCheckBox::indicator:checked:hover {{
                         point["y"] = int(float(before["y"]))
                     except (KeyError, TypeError, ValueError):
                         pass
+        elif op == "reorder":
+            try:
+                from_index = int(action.get("from", -1))
+                to_index = int(action.get("to", -1))
+            except (TypeError, ValueError):
+                from_index = -1
+                to_index = -1
+            if 0 <= to_index < len(state.draft_points):
+                point = state.draft_points.pop(to_index)
+                restore_index = max(0, min(len(state.draft_points), from_index))
+                state.draft_points.insert(restore_index, point)
         self._mark_drawing_dirty()
         self._sync_route_drawing_ui()
 
@@ -876,8 +936,7 @@ QCheckBox::indicator:checked:hover {{
         if not isinstance(point, dict):
             return False
         try:
-            next_x = int(x)
-            next_y = int(y)
+            next_x, next_y = self._drawing_resource_xy(x, y)
         except (TypeError, ValueError):
             return False
 
@@ -911,8 +970,8 @@ QCheckBox::indicator:checked:hover {{
         if not isinstance(point, dict):
             return False
         try:
-            before = (int(before_x), int(before_y))
-            after = (int(after_x), int(after_y))
+            before = self._drawing_resource_xy(before_x, before_y)
+            after = self._drawing_resource_xy(after_x, after_y)
         except (TypeError, ValueError):
             return False
         if before == after:
@@ -929,6 +988,46 @@ QCheckBox::indicator:checked:hover {{
         self._mark_drawing_dirty()
         self._sync_route_drawing_ui()
         return True
+
+    def reorder_drawing_point(self, from_index: int, to_index: int) -> bool:
+        state = self.window.route_drawing_state
+        if not state.active or not isinstance(from_index, int) or not (0 <= from_index < len(state.draft_points)):
+            return False
+        try:
+            target = int(to_index)
+        except (TypeError, ValueError):
+            return False
+        target = max(0, min(len(state.draft_points) - 1, target))
+        if from_index == target:
+            return False
+
+        point = state.draft_points.pop(from_index)
+        state.draft_points.insert(target, point)
+        state.undo_stack.append({
+            "op": "reorder",
+            "from": from_index,
+            "to": target,
+        })
+        self._mark_drawing_dirty()
+        self._sync_route_drawing_ui()
+        return True
+
+    def change_drawing_point_order(self, point_index: int) -> None:
+        state = self.window.route_drawing_state
+        if not state.active or not isinstance(point_index, int) or not (0 <= point_index < len(state.draft_points)):
+            return
+        if len(state.draft_points) < 2:
+            return
+
+        target = open_point_order_dialog(
+            self.window,
+            state.name or state.route_id,
+            point_index,
+            len(state.draft_points),
+        )
+        if target is None:
+            return
+        self.reorder_drawing_point(point_index, target)
 
     def set_drawing_point_node_type(self, point_index: int, node_type: str) -> bool:
         state = self.window.route_drawing_state
@@ -1241,10 +1340,22 @@ QCheckBox::indicator:checked:hover {{
         current_color = self.window.route_mgr.route_color_override(route_id) or None
         route_color = self.window.route_mgr.color_for(route_id) if route_id else (255, 209, 26)
         nodes = self._route_notes_nodes(route)
-        accepted, notes, color = edit_route_notes(self.window, name, current_notes, route_color, current_color, nodes)
-        if not accepted or (notes == current_notes and color == current_color):
+        result = edit_route_notes(
+            self.window,
+            name,
+            current_notes,
+            route_color,
+            current_color,
+            nodes,
+        )
+        accepted, notes, color = result[:3]
+        if not accepted or (
+            notes == current_notes
+            and color == current_color
+        ):
             return
-        if not self.window.route_mgr.update_route_notes_and_color(category, name, notes, color):
+        saved = self.window.route_mgr.update_route_notes_and_color(category, name, notes, color)
+        if not saved:
             styled_info(self.window, strings.ROUTE_NOTES_TITLE, strings.ROUTE_NOTES_SAVE_FAILED.format(name=name))
             return
         self.refresh_route_checkbox_colors()

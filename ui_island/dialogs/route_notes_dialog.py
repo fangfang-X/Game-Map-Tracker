@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QDialog,
 )
 
-from route_manager import NODE_TYPE_COLLECT, NODE_TYPE_TELEPORT, NODE_TYPE_VIRTUAL, NODE_TYPES
+from ui_island.services.route_manager import NODE_TYPE_COLLECT, NODE_TYPE_TELEPORT, NODE_TYPE_VIRTUAL, NODE_TYPES
 
 from .base import StyledDialogBase, center_dialog
 from .color_picker import open_styled_color_picker
@@ -28,6 +28,11 @@ from ..widgets.factory import make_scroll_area
 
 _NODE_ICON_SIZE = 22
 _STAT_COLUMNS = 3
+_TITLE_ROW_HEIGHT = 26
+_NODE_PANEL_SPACING = 8
+_NODE_SCROLL_MIN_HEIGHT = 220
+_STATS_SCROLL_DEFAULT_HEIGHT = 72
+_STATS_SCROLL_MAX_HEIGHT = 150
 _COLOR_BUTTON_TEXT = "（当前路线颜色）"
 
 
@@ -129,7 +134,7 @@ class RouteNotesDialog(StyledDialogBase):
         color_override: str | None,
         nodes: list[dict],
     ) -> None:
-        super().__init__(parent, strings.ROUTE_NOTES_TITLE, min_width=760, max_width=980)
+        super().__init__(parent, route_name, min_width=760, max_width=980)
         self._route_name = route_name
         self._notes = notes
         self._route_color_hex = route_color_to_hex(route_color)
@@ -142,6 +147,7 @@ class RouteNotesDialog(StyledDialogBase):
         content_layout.setSpacing(14)
 
         left = QWidget(content)
+        left.setObjectName("RouteNotesLeftColumn")
         left.setMinimumWidth(340)
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
@@ -150,10 +156,13 @@ class RouteNotesDialog(StyledDialogBase):
         content_layout.addWidget(left, stretch=3)
 
         right = QWidget(content)
+        right.setObjectName("RouteNotesRightColumn")
         right.setMinimumWidth(300)
+        right.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(8)
+        right_layout.setSpacing(_NODE_PANEL_SPACING)
+        right_layout.setAlignment(Qt.AlignTop)
         self._build_nodes_column(right_layout)
         content_layout.addWidget(right, stretch=2)
 
@@ -162,13 +171,9 @@ class RouteNotesDialog(StyledDialogBase):
         self.resize(840, 460)
 
     def _build_notes_column(self, layout: QVBoxLayout) -> None:
-        subtitle = QLabel(f"路线：{self._route_name}")
-        subtitle.setObjectName("StatLabel")
-        subtitle.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        layout.addWidget(subtitle)
-
         notes_header = QWidget(self)
         notes_header.setObjectName("RouteNotesHeaderRow")
+        notes_header.setFixedHeight(_TITLE_ROW_HEIGHT)
         header_layout = QHBoxLayout(notes_header)
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(8)
@@ -193,12 +198,13 @@ class RouteNotesDialog(StyledDialogBase):
         self.editor = QPlainTextEdit(self)
         self.editor.setPlaceholderText(strings.ROUTE_NOTES_PLACEHOLDER)
         self.editor.setPlainText(self._notes)
-        self.editor.setMinimumHeight(240)
+        self.editor.setMinimumHeight(120)
         self.editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         layout.addWidget(self.editor, stretch=1)
+        self._build_stats_section(layout)
         self._sync_color_controls()
 
-    def _build_nodes_column(self, layout: QVBoxLayout) -> None:
+    def _build_stats_section(self, layout: QVBoxLayout) -> None:
         stats_title = QLabel(strings.ROUTE_NOTES_STATS_TITLE)
         stats_title.setObjectName("FieldLabel")
         layout.addWidget(stats_title)
@@ -221,17 +227,29 @@ class RouteNotesDialog(StyledDialogBase):
             chip.setObjectName("RouteNotesStatChip")
             chip.setToolTip(f"{label}：{count}")
             stats_layout.addWidget(chip, index // _STAT_COLUMNS, index % _STAT_COLUMNS)
-        layout.addWidget(stats)
 
+        scroll_height = max(_STATS_SCROLL_DEFAULT_HEIGHT, min(_STATS_SCROLL_MAX_HEIGHT, stats.sizeHint().height()))
+        scroll = make_scroll_area(
+            object_name="RouteNotesStatsScroll",
+            horizontal_policy=Qt.ScrollBarAlwaysOff,
+            vertical_policy=Qt.ScrollBarAsNeeded,
+            fixed_height=scroll_height,
+        )
+        scroll.setWidget(stats)
+        layout.addWidget(scroll)
+
+    def _build_nodes_column(self, layout: QVBoxLayout) -> None:
         nodes_title = QLabel(strings.ROUTE_NOTES_NODE_LIST)
         nodes_title.setObjectName("FieldLabel")
+        nodes_title.setFixedHeight(_TITLE_ROW_HEIGHT)
+        nodes_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         layout.addWidget(nodes_title)
 
         scroll = make_scroll_area(
-            object_name="AnnotationPanelScroll",
+            object_name="RouteNotesNodeScroll",
             horizontal_policy=Qt.ScrollBarAlwaysOff,
-            min_height=220,
-            max_height=320,
+            min_height=_NODE_SCROLL_MIN_HEIGHT,
+            size_policy=(QSizePolicy.Expanding, QSizePolicy.Expanding),
         )
         host = QWidget()
         host.setObjectName("AnnotationPanelInner")

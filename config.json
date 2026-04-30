@@ -1,5 +1,5 @@
 {
-    "CONFIG_VERSION": 2,
+    "CONFIG_VERSION": 5,
     "MINIMAP": {
         "top": 65,
         "left": 2301,
@@ -7,8 +7,8 @@
         "height": 212
     },
     "WINDOW_GEOMETRY": {
-        "x": 619,
-        "y": 54,
+        "x": 727,
+        "y": 287,
         "width": 766,
         "height": 500
     },
@@ -21,10 +21,12 @@
         "height": 500
     },
     "SIDEBAR_COLLAPSED": false,
-    "SIDEBAR_WIDTH": 270,
-    "PAUSED_SIDEBAR_WIDTH": 230,
+    "SIDEBAR_WIDTH": 231,
+    "PAUSED_SIDEBAR_WIDTH": 231,
     "VIEW_SIZE": 400,
-    "LOGIC_MAP_PATH": "big_map.png",
+    "MAP_FILE": "maps/卡洛西亚大陆/big_map_17173.png",
+    "LOGIC_MAP_PATH": "maps/卡洛西亚大陆/big_map_17173.png",
+    "ANNOTATION_FILE": "annotations/points_17173.json",
     "MAX_LOST_FRAMES": 30,
     "SIFT_REFRESH_RATE": 30,
     "SIFT_CLAHE_LIMIT": 3.0,
@@ -65,6 +67,7 @@
         "特定精灵球": false
     },
     "ANNOTATION_TYPE_IDS": [
+        "17310030001",
         "17310030002",
         "17310030004",
         "17310030005",
@@ -85,8 +88,10 @@
         "17310030021",
         "17310030022",
         "17310030023",
+        "17310030024",
         "17310030025",
         "17310030026",
+        "17310030027",
         "17310030028",
         "17310030029",
         "17310030030",
@@ -137,25 +142,22 @@
         "17310030077",
         "17310030078",
         "17310030079",
-        "17310030082",
-        "17310030027",
-        "17310030001",
-        "17310030024",
+        "17310030080",
         "17310030081",
-        "17310030080"
+        "17310030082"
     ],
     "ANNOTATION_GROUP_EXPANDED": {
-        "地点": false,
+        "地点": true,
         "花草": false,
-        "精灵": false,
+        "精灵": true,
         "果树": false,
         "收集": false,
         "其他": false,
         "任务": false,
         "矿石": false,
-        "标注": false,
+        "标注": true,
         "标注方案预设": false
     },
-    "APP_UPDATE_LAST_PROMPTED_VERSION": "0.1.2",
+    "APP_UPDATE_LAST_PROMPTED_VERSION": "0.1.3",
     "APP_NOTICE_LAST_ACK_KEY": "5d4e30788db431fe44ba2fe9f5bf8b176425abc5219c19b651ab059646e171fb"
 }

@@ -239,7 +239,13 @@ class _FakeRouteManager:
         route = self._route_by_category_name(category, name)
         return str(route.get("notes") or "") if route is not None else ""
 
-    def update_route_notes_and_color(self, category: str, name: str, notes: str, color: str | None) -> bool:
+    def update_route_notes_and_color(
+        self,
+        category: str,
+        name: str,
+        notes: str,
+        color: str | None,
+    ) -> bool:
         route = self._route_by_category_name(category, name)
         if route is None:
             return False
@@ -414,6 +420,7 @@ class RoutePanelFilterTests(unittest.TestCase):
 
         self.assertEqual(window.route_mgr.saved_notes_calls, [("矿物", "矿线", "new", "#112233")])
         self.assertEqual(window.map_view.refresh_count, 1)
+
 
     def test_category_select_all_selects_only_category_and_saves_once(self) -> None:
         window = _FakeWindow("")
@@ -630,6 +637,91 @@ class RoutePanelFilterTests(unittest.TestCase):
         self.assertEqual(window.route_drawing_state.undo_stack, [])
         self.assertFalse(window.route_drawing_state.dirty)
 
+    def test_reorder_drawing_point_moves_forward_and_undo_restores(self) -> None:
+        window = _FakeWindow("")
+        window.route_drawing_state = RouteDrawingState()
+        window.route_drawing_state.begin(
+            route_id="2026010101",
+            category="routes",
+            name="route",
+            points=[{"id": "a", "x": 0, "y": 0}, {"id": "b", "x": 10, "y": 0}, {"id": "c", "x": 20, "y": 0}],
+        )
+        controller = self._controller_for(window)
+        controller._sync_route_drawing_ui = lambda: None
+
+        self.assertTrue(controller.reorder_drawing_point(0, 2))
+
+        self.assertEqual([point["id"] for point in window.route_drawing_state.draft_points], ["b", "c", "a"])
+        self.assertEqual(window.route_drawing_state.undo_stack[-1], {"op": "reorder", "from": 0, "to": 2})
+        self.assertTrue(window.route_drawing_state.dirty)
+
+        controller.undo_route_drawing()
+
+        self.assertEqual([point["id"] for point in window.route_drawing_state.draft_points], ["a", "b", "c"])
+        self.assertFalse(window.route_drawing_state.dirty)
+
+    def test_reorder_drawing_point_moves_backward_and_ignores_same_position(self) -> None:
+        window = _FakeWindow("")
+        window.route_drawing_state = RouteDrawingState()
+        window.route_drawing_state.begin(
+            route_id="2026010101",
+            category="routes",
+            name="route",
+            points=[{"id": "a", "x": 0, "y": 0}, {"id": "b", "x": 10, "y": 0}, {"id": "c", "x": 20, "y": 0}],
+        )
+        controller = self._controller_for(window)
+        controller._sync_route_drawing_ui = lambda: None
+
+        self.assertFalse(controller.reorder_drawing_point(1, 1))
+        self.assertEqual(window.route_drawing_state.undo_stack, [])
+
+        self.assertTrue(controller.reorder_drawing_point(2, 0))
+
+        self.assertEqual([point["id"] for point in window.route_drawing_state.draft_points], ["c", "a", "b"])
+        self.assertEqual(window.route_drawing_state.undo_stack[-1], {"op": "reorder", "from": 2, "to": 0})
+
+    def test_change_drawing_point_order_uses_dialog_target(self) -> None:
+        window = _FakeWindow("")
+        window.route_drawing_state = RouteDrawingState()
+        window.route_drawing_state.begin(
+            route_id="2026010101",
+            category="routes",
+            name="route",
+            points=[{"id": "a", "x": 0, "y": 0}, {"id": "b", "x": 10, "y": 0}],
+        )
+        controller = self._controller_for(window)
+        controller._sync_route_drawing_ui = lambda: None
+
+        with patch("ui_island.controllers.route_panel_controller.open_point_order_dialog", return_value=1) as dialog:
+            controller.change_drawing_point_order(0)
+
+        dialog.assert_called_once_with(window, "route", 0, 2)
+        self.assertEqual([point["id"] for point in window.route_drawing_state.draft_points], ["b", "a"])
+
+    def test_save_route_drawing_writes_reordered_draft_order(self) -> None:
+        window = _FakeWindow("")
+        window.route_mgr = _FakeRouteManager({
+            "2026010101": {
+                "points": [{"id": "a", "x": 0, "y": 0}, {"id": "b", "x": 10, "y": 0}],
+                "loop": False,
+            }
+        })
+        window.route_drawing_state = RouteDrawingState()
+        window.route_drawing_state.begin(
+            route_id="2026010101",
+            category="routes",
+            name="route",
+            points=[{"id": "a", "x": 0, "y": 0}, {"id": "b", "x": 10, "y": 0}],
+        )
+        controller = self._controller_for(window)
+        controller._sync_route_drawing_ui = lambda: None
+
+        self.assertTrue(controller.reorder_drawing_point(0, 1))
+        with patch("ui_island.controllers.route_panel_controller.toast"):
+            self.assertTrue(controller.save_route_drawing())
+
+        self.assertEqual([point["id"] for point in window.route_mgr.saved_points_calls[-1][1]], ["b", "a"])
+
     def test_append_drawing_point_defaults_to_end(self) -> None:
         window = _FakeWindow("")
         window.route_drawing_state = RouteDrawingState()
@@ -650,6 +742,40 @@ class RoutePanelFilterTests(unittest.TestCase):
             (10, 0),
         ])
         self.assertEqual(window.route_drawing_state.undo_stack[-1]["index"], 2)
+
+    def test_append_drawing_point_with_point_fields_binds_annotation_to_draft(self) -> None:
+        window = _FakeWindow("")
+        window.route_drawing_state = RouteDrawingState()
+        window.route_drawing_state.begin(route_id="2026010101", category="routes", name="route", points=[])
+        window.route_drawing_state.node_type = "teleport"
+        controller = self._controller_for(window)
+        controller._sync_route_drawing_ui = lambda: None
+
+        controller.append_drawing_point(
+            10,
+            20,
+            point_fields={
+                "typeId": "ore",
+                "type": "矿石",
+                "label": "黑矿",
+                "radius": 30,
+                "sourceId": "source-1",
+                "manual": True,
+                "node_type": "virtual",
+                "visited": True,
+            },
+        )
+
+        point = window.route_drawing_state.draft_points[-1]
+        self.assertEqual(point["typeId"], "ore")
+        self.assertEqual(point["type"], "矿石")
+        self.assertEqual(point["label"], "黑矿")
+        self.assertEqual(point["radius"], 30)
+        self.assertEqual(point["sourceId"], "source-1")
+        self.assertTrue(point["manual"])
+        self.assertEqual(point["node_type"], "teleport")
+        self.assertNotIn("visited", point)
+        self.assertTrue(point["_drawing_new"])
 
     def test_append_drawing_point_can_insert_after_nearest_node(self) -> None:
         window = _FakeWindow("")
@@ -857,6 +983,36 @@ class RoutePanelFilterTests(unittest.TestCase):
         ])
         self.assertEqual(window.route_drawing_state.undo_stack[-1]["index"], 0)
 
+    def test_context_menu_drawing_point_with_point_fields_uses_dialog_override(self) -> None:
+        window = _FakeWindow("")
+        window.route_drawing_state = RouteDrawingState()
+        window.route_drawing_state.begin(
+            route_id="2026010101",
+            category="routes",
+            name="route",
+            points=[{"x": 0, "y": 0}, {"x": 100, "y": 0}],
+        )
+        window.route_drawing_state.insert_at_end = False
+        controller = self._controller_for(window)
+        controller._sync_route_drawing_ui = lambda: None
+
+        with patch(
+            "ui_island.controllers.route_panel_controller.open_insert_point_dialog",
+            return_value=(["2026010101"], {"2026010101": 0}),
+        ):
+            controller.append_drawing_point_from_context_menu(
+                10,
+                0,
+                point_fields={"typeId": "ore", "type": "矿石", "label": "黑矿"},
+            )
+
+        point = window.route_drawing_state.draft_points[0]
+        self.assertEqual((point["x"], point["y"]), (10, 0))
+        self.assertEqual(point["typeId"], "ore")
+        self.assertEqual(point["type"], "矿石")
+        self.assertEqual(point["label"], "黑矿")
+        self.assertEqual(window.route_drawing_state.undo_stack[-1]["index"], 0)
+
     def test_context_menu_drawing_point_cancel_or_unselected_does_not_insert(self) -> None:
         window = _FakeWindow("")
         window.route_drawing_state = RouteDrawingState()
@@ -932,6 +1088,28 @@ class RoutePanelFilterTests(unittest.TestCase):
         self.assertFalse(window.route_drawing_state.insert_at_end)
         self.assertNotIn("insert_at_end", window.route_mgr.routes["2026010101"])
         self.assertNotIn("insert_at_end", window.route_mgr.saved_points_calls[-1][1][0])
+
+    def test_save_route_drawing_writes_annotation_fields_and_strips_drawing_flags(self) -> None:
+        window = _FakeWindow("")
+        window.route_mgr = _FakeRouteManager({"2026010101": {"points": []}})
+        window.route_drawing_state = RouteDrawingState()
+        window.route_drawing_state.begin(route_id="2026010101", category="routes", name="route", points=[])
+        controller = self._controller_for(window)
+        controller._sync_route_drawing_ui = lambda: None
+
+        controller.append_drawing_point(
+            10,
+            20,
+            point_fields={"typeId": "ore", "type": "矿石", "label": "黑矿"},
+        )
+        with patch("ui_island.controllers.route_panel_controller.toast"):
+            self.assertTrue(controller.save_route_drawing())
+
+        saved_point = window.route_mgr.saved_points_calls[-1][1][0]
+        self.assertEqual(saved_point["typeId"], "ore")
+        self.assertEqual(saved_point["type"], "矿石")
+        self.assertEqual(saved_point["label"], "黑矿")
+        self.assertNotIn("_drawing_new", saved_point)
 
     def test_update_route_drawing_toolbar_syncs_insert_at_end_checkbox(self) -> None:
         window = _FakeWindow("")

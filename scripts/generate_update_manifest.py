@@ -20,6 +20,8 @@ PROTECTED_USER_FILES = {
     "tools/points_get/.cache_17173_locations.json",
 }
 PROTECTED_USER_PREFIXES = (
+    "annotations/",
+    "maps/",
     "routes/",
     "tools/",
 )
@@ -29,6 +31,8 @@ DEFAULT_EXCLUDES = {
     "update-job.json",
     "config.json.bak",
 }
+DEFAULT_DELETE_PATHS = ("big_map.png",)
+MAP_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
 RUNTIME_CONFIG_STRING_KEYS = (
     "QUARK_DOWNLOAD_URL",
     "ROUTE_RESOURCE_URL",
@@ -37,6 +41,7 @@ RUNTIME_CONFIG_STRING_KEYS = (
     "FEEDBACK_QQ_GROUP",
 )
 RUNTIME_CONFIG_LIST_KEYS = ("APP_UPDATE_MANIFEST_URLS",)
+RUNTIME_CONFIG_STRING_LIST_KEYS = ("APP_ENABLE_ROUTE_VERSIONS",)
 APP_STATUS_NORMAL = "normal"
 APP_STATUS_NOTICE = "notice"
 APP_STATUS_DISABLED = "disabled"
@@ -69,12 +74,21 @@ def is_user_data_path(value: str) -> bool:
     return rel in PROTECTED_USER_FILES or any(rel.startswith(prefix) for prefix in PROTECTED_USER_PREFIXES)
 
 
-def iter_release_files(root: Path):
+def iter_release_files(root: Path, include_paths: set[str] | None = None):
+    include_paths = include_paths or set()
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
         rel = path.relative_to(root).as_posix()
+        if rel in include_paths:
+            yield path, rel
+            continue
         if rel in DEFAULT_EXCLUDES or is_user_data_path(rel):
+            continue
+        rel_lower = rel.casefold()
+        if rel_lower in {"big_map.png", "big_map_17173.png"}:
+            continue
+        if rel_lower.startswith("maps/") and Path(rel_lower).suffix in MAP_IMAGE_EXTENSIONS:
             continue
         yield path, rel
 
@@ -88,6 +102,20 @@ def _dedupe_strings(values: list[str]) -> list[str]:
             seen.add(clean)
             result.append(clean)
     return result
+
+
+def sanitize_delete_paths(values: list[str] | tuple[str, ...] | None) -> list[str]:
+    clean_paths: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        rel = str(value or "").replace("\\", "/").strip().lstrip("/")
+        if not rel or rel in seen:
+            continue
+        if rel.startswith("../") or "/../" in rel:
+            continue
+        seen.add(rel)
+        clean_paths.append(rel)
+    return clean_paths
 
 
 def _sanitize_named_links(value: object) -> list[dict[str, str]]:
@@ -132,6 +160,13 @@ def sanitize_runtime_config(payload: dict) -> dict:
     clean_manifest_urls = _dedupe_strings(manifest_urls)
     if clean_manifest_urls:
         runtime_config["APP_UPDATE_MANIFEST_URLS"] = clean_manifest_urls
+
+    for key in RUNTIME_CONFIG_STRING_LIST_KEYS:
+        value = payload.get(key)
+        if isinstance(value, list):
+            clean_values = _dedupe_strings([item for item in value if isinstance(item, str)])
+            if clean_values:
+                runtime_config[key] = clean_values
 
     return runtime_config
 
@@ -213,6 +248,8 @@ def build_manifest(
     min_supported_version_message: str = "",
     runtime_config_path: Path | str | None = None,
     obsolete_config_keys: list[str] | tuple[str, ...] | None = None,
+    delete_paths: list[str] | tuple[str, ...] | None = None,
+    include_paths: list[str] | tuple[str, ...] | None = None,
 ) -> dict:
     files = []
     clean_version = normalize_version(version)
@@ -227,7 +264,8 @@ def build_manifest(
         if clean_min_supported_version
         else ""
     )
-    for path, rel in iter_release_files(root):
+    clean_include_paths = set(sanitize_delete_paths(include_paths or []))
+    for path, rel in iter_release_files(root, clean_include_paths):
         item = {
             "path": rel,
             "url": normalized_base_url + quote(rel, safe="/"),
@@ -250,7 +288,7 @@ def build_manifest(
         "prompt_update": bool(prompt_update),
         "force_update_prompt": bool(force_update_prompt),
         "files": files,
-        "delete": [],
+        "delete": sanitize_delete_paths([*DEFAULT_DELETE_PATHS, *(delete_paths or [])]),
     }
     runtime_config = load_runtime_config(runtime_config_path)
     if runtime_config:
@@ -335,6 +373,18 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         help="可重复：声明更新安装时应从用户 config.json 清理的废弃配置键。",
     )
+    parser.add_argument(
+        "--delete",
+        action="append",
+        default=[],
+        help="可重复：声明更新安装时需要删除的旧文件；本版本默认包含 big_map.png。",
+    )
+    parser.add_argument(
+        "--include",
+        action="append",
+        default=[],
+        help="显式把默认受保护的发布路径加入清单，例如 maps/big_map_17173.png。",
+    )
     args = parser.parse_args(argv)
 
     root = Path(args.release_dir).resolve()
@@ -356,6 +406,8 @@ def main(argv: list[str] | None = None) -> int:
         min_supported_version_message=args.min_supported_version_message,
         runtime_config_path=args.runtime_config,
         obsolete_config_keys=args.obsolete_config_key,
+        delete_paths=args.delete,
+        include_paths=args.include,
     )
     output = Path(args.output)
     output.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

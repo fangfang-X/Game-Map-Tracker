@@ -14,11 +14,14 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QColorDialog,
+    QComboBox,
     QDialog,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QKeySequenceEdit,
     QSizePolicy,
@@ -148,6 +151,210 @@ def format_update_progress_message(downloaded: int, total: int, path: str = "") 
     return "正在下载更新..."
 
 
+class RouteFormatConverterDialog(StyledDialogBase):
+    _MODE_NORMALIZE = "normalize"
+    _MODE_OLD_TO_17173 = "old_to_17173"
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent, "路线转换", min_width=680, max_width=860)
+        self._mode_combo: QComboBox | None = None
+        self._output_row: QWidget | None = None
+        self._input_editor: QLineEdit | None = None
+        self._output_editor: QLineEdit | None = None
+        self._recursive_checkbox: QCheckBox | None = None
+        self._overwrite_checkbox: QCheckBox | None = None
+        self._log: QPlainTextEdit | None = None
+        self._build_ui()
+        self.resize(760, 520)
+
+    def _build_ui(self) -> None:
+        content = QWidget(self)
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        mode_row = QWidget(self)
+        mode_layout = QHBoxLayout(mode_row)
+        mode_layout.setContentsMargins(0, 0, 0, 0)
+        mode_layout.setSpacing(8)
+        mode_label = QLabel("转换模式")
+        mode_label.setObjectName("FieldLabel")
+        mode_layout.addWidget(mode_label)
+        mode_combo = QComboBox(self)
+        mode_combo.addItem("整理路线格式（输出到新目录）", self._MODE_NORMALIZE)
+        mode_combo.addItem("旧 big_map 坐标转 17173 坐标（覆盖源文件）", self._MODE_OLD_TO_17173)
+        mode_combo.currentIndexChanged.connect(self._sync_mode_ui)
+        self._mode_combo = mode_combo
+        mode_layout.addWidget(mode_combo, stretch=1)
+        layout.addWidget(mode_row)
+
+        self._input_editor = self._build_path_row(layout, "输入目录", config.app_path("routes"), self._choose_input)
+        self._output_editor = self._build_path_row(layout, "输出目录", config.app_path("routes"), self._choose_output)
+
+        option_row = QWidget(self)
+        option_layout = QHBoxLayout(option_row)
+        option_layout.setContentsMargins(0, 0, 0, 0)
+        option_layout.setSpacing(8)
+
+        recursive_checkbox = QCheckBox("包含子文件夹")
+        recursive_checkbox.setChecked(True)
+        self._recursive_checkbox = recursive_checkbox
+        option_layout.addWidget(recursive_checkbox)
+
+        overwrite_checkbox = QCheckBox("覆盖已存在输出")
+        overwrite_checkbox.setChecked(False)
+        self._overwrite_checkbox = overwrite_checkbox
+        option_layout.addWidget(overwrite_checkbox)
+        option_layout.addStretch()
+        layout.addWidget(option_row)
+
+        start_btn = QPushButton("开始转换")
+        start_btn.setFixedHeight(32)
+        start_btn.clicked.connect(self._start_conversion)
+        layout.addWidget(start_btn)
+
+        log = QPlainTextEdit(self)
+        log.setReadOnly(True)
+        log.setMinimumHeight(220)
+        log.setPlaceholderText("转换日志")
+        self._log = log
+        layout.addWidget(log, stretch=1)
+        self.shell_layout.addWidget(content, stretch=1)
+        self.add_action_row(confirm_text="关闭", cancel_text="")
+        self._sync_mode_ui()
+
+    def _build_path_row(self, layout: QVBoxLayout, label_text: str, value: str, callback) -> QLineEdit:
+        row = QWidget(self)
+        if label_text == "输出目录":
+            self._output_row = row
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(8)
+        label = QLabel(label_text)
+        label.setObjectName("FieldLabel")
+        row_layout.addWidget(label)
+        editor = QLineEdit(value)
+        editor.setMinimumHeight(28)
+        row_layout.addWidget(editor, stretch=1)
+        button = QPushButton("浏览")
+        button.setFixedHeight(28)
+        button.clicked.connect(callback)
+        row_layout.addWidget(button)
+        layout.addWidget(row)
+        return editor
+
+    def _current_mode(self) -> str:
+        if self._mode_combo is None:
+            return self._MODE_NORMALIZE
+        return str(self._mode_combo.currentData() or self._MODE_NORMALIZE)
+
+    def _sync_mode_ui(self) -> None:
+        old_to_17173 = self._current_mode() == self._MODE_OLD_TO_17173
+        if self._output_row is not None:
+            self._output_row.setVisible(not old_to_17173)
+        if self._overwrite_checkbox is not None:
+            self._overwrite_checkbox.setVisible(not old_to_17173)
+        if self._log is not None:
+            self._log.setPlaceholderText(
+                "此模式会直接覆盖源路线文件，请先备份原路线文件。"
+                if old_to_17173
+                else "转换日志"
+            )
+
+    def _choose_input(self) -> None:
+        selected = QFileDialog.getExistingDirectory(self, "选择输入目录", self._input_editor.text() if self._input_editor else "")
+        if selected and self._input_editor is not None:
+            self._input_editor.setText(selected)
+            if self._output_editor is not None and not self._output_editor.text().strip():
+                self._output_editor.setText(selected)
+
+    def _choose_output(self) -> None:
+        selected = QFileDialog.getExistingDirectory(self, "选择输出目录", self._output_editor.text() if self._output_editor else "")
+        if selected and self._output_editor is not None:
+            self._output_editor.setText(selected)
+
+    def _append_log(self, text: str) -> None:
+        if self._log is None:
+            return
+        self._log.appendPlainText(text)
+
+    def _start_conversion(self) -> None:
+        from tools.route_format_converter import convert_old_big_map_routes_in_place, convert_route_folder
+
+        input_dir = self._input_editor.text().strip() if self._input_editor is not None else ""
+        mode = self._current_mode()
+        if not input_dir:
+            styled_info(self, "路线转换", "请先选择输入目录。")
+            return
+        if self._log is not None:
+            self._log.clear()
+        try:
+            if mode == self._MODE_OLD_TO_17173:
+                confirmed = styled_confirm(
+                    self,
+                    "覆盖转换路线",
+                    "此操作会把旧 big_map 坐标转换为 big_map_17173 坐标，并直接覆盖源路线文件。\n\n"
+                    "正式执行前请先备份原路线文件。确定继续吗？",
+                    confirm_text="已备份，开始转换",
+                    cancel_text="取消",
+                )
+                if not confirmed:
+                    return
+                report = convert_old_big_map_routes_in_place(
+                    input_dir,
+                    recursive=self._recursive_checkbox.isChecked() if self._recursive_checkbox is not None else True,
+                )
+                refresh_dir = input_dir
+            else:
+                output_dir = self._output_editor.text().strip() if self._output_editor is not None else ""
+                if not output_dir:
+                    styled_info(self, "路线转换", "请先选择输出目录。")
+                    return
+                report = convert_route_folder(
+                    input_dir,
+                    output_dir,
+                    recursive=self._recursive_checkbox.isChecked() if self._recursive_checkbox is not None else True,
+                    overwrite=self._overwrite_checkbox.isChecked() if self._overwrite_checkbox is not None else False,
+                )
+                refresh_dir = output_dir
+        except Exception as exc:
+            styled_info(self, "路线转换失败", str(exc))
+            self._append_log(f"[错误] {exc}")
+            return
+
+        self._append_log(f"已转换：{report.converted}")
+        self._append_log(f"已跳过：{report.skipped}")
+        self._append_log(f"已忽略：{report.ignored}")
+        if report.points_converted:
+            self._append_log(f"已转换点位：{report.points_converted}")
+        self._append_log(f"错误数：{report.errors}")
+        if report.messages:
+            self._append_log("")
+            for message in report.messages:
+                self._append_log(message)
+        if report.errors:
+            styled_info(self, "路线转换完成", "转换已结束，但存在错误，请查看日志。")
+        else:
+            toast(self, "路线转换完成")
+        self._refresh_routes_if_needed(refresh_dir)
+
+    def _refresh_routes_if_needed(self, output_dir: str) -> None:
+        try:
+            output_path = os.path.abspath(output_dir)
+            routes_path = os.path.abspath(config.app_path("routes"))
+            if os.path.commonpath([output_path, routes_path]) != routes_path:
+                return
+        except (OSError, ValueError):
+            return
+        parent = self.parent()
+        controller = getattr(parent, "route_panel_controller", None)
+        if controller is not None:
+            try:
+                controller.reload_route_list()
+            except Exception:
+                pass
+
+
 class SettingsDialog(QDialog):
     applied = Signal()
     restart_requested = Signal()
@@ -180,6 +387,9 @@ class SettingsDialog(QDialog):
         self._editors: dict[str, QLineEdit] = {}
         self._initial_values: dict[str, str] = {}
         self._minimap_editors: dict[str, QLineEdit] = {}
+        self._map_dir_combo: QComboBox | None = None
+        self._map_file_combo: QComboBox | None = None
+        self._annotation_file_combo: QComboBox | None = None
         self._route_multi_color_checkbox: QCheckBox | None = None
         self._route_special_lines_follow_checkbox: QCheckBox | None = None
         self._route_strict_guide_checkbox: QCheckBox | None = None
@@ -243,11 +453,20 @@ class SettingsDialog(QDialog):
         title_row.addWidget(close_btn)
         shell_layout.addWidget(title_bar)
 
+        map_file_row = self._build_map_file_row()
+        annotation_file_row = self._build_annotation_file_row()
         minimap_row = self._build_minimap_row()
         route_color_row = self._build_route_color_row()
         hotkey_row = self._build_hotkey_row()
         opacity_row = self._build_opacity_row()
-        common_extra = self._build_common_extra(minimap_row, opacity_row, route_color_row, hotkey_row)
+        common_extra = self._build_common_extra(
+            map_file_row,
+            annotation_file_row,
+            minimap_row,
+            opacity_row,
+            route_color_row,
+            hotkey_row,
+        )
         tools_section = self._build_tools_section()
 
         buttons_bar = QWidget()
@@ -798,6 +1017,223 @@ class SettingsDialog(QDialog):
             if text in button_map:
                 button.setText(button_map[text])
 
+    def _build_map_file_row(self) -> QWidget:
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 6, 0)
+        layout.setSpacing(8)
+
+        label = QLabel("地图  *")
+        label.setObjectName("FieldLabel")
+        label.setToolTip("保存后需要重启生效")
+        layout.addWidget(label)
+
+        current = config.normalize_map_file(getattr(config, "MAP_FILE", config.DEFAULT_CONFIG.get("MAP_FILE")))
+        current_dir = config.map_directory_for_file(current)
+        dir_combo = QComboBox()
+        dir_combo.setFixedHeight(28)
+        dir_combo.setMinimumWidth(150)
+        dir_combo.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self._map_dir_combo = dir_combo
+        directories = config.available_map_directories()
+        if current_dir not in directories:
+            directories.append(current_dir)
+        for directory in directories:
+            dir_combo.addItem(config.map_directory_display_name(directory), directory)
+        self._set_map_directory_value(current_dir)
+        dir_combo.currentIndexChanged.connect(lambda _index: self._refresh_map_file_combo())
+        layout.addWidget(dir_combo)
+
+        combo = QComboBox()
+        combo.setFixedHeight(28)
+        combo.setMinimumWidth(190)
+        combo.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self._map_file_combo = combo
+        self._initial_values["MAP_FILE"] = current
+        self._refresh_map_file_combo(current)
+        combo.currentIndexChanged.connect(lambda _index: self._sync_map_file_tooltip())
+        layout.addWidget(combo)
+        choose_btn = QPushButton("选择文件")
+        choose_btn.setFixedHeight(28)
+        choose_btn.clicked.connect(self._on_choose_map_file)
+        layout.addWidget(choose_btn)
+
+        hint = QLabel("放入 maps/ 后重启")
+        hint.setObjectName("StatLabel")
+        layout.addWidget(hint)
+        layout.addStretch()
+        self._sync_map_file_tooltip()
+        return row
+
+    def _current_map_directory_from_combo(self) -> str:
+        if self._map_dir_combo is None:
+            return config.map_directory_for_file(getattr(config, "MAP_FILE", config.DEFAULT_CONFIG.get("MAP_FILE")))
+        return config.normalize_map_directory(self._map_dir_combo.currentData())
+
+    def _set_map_directory_value(self, directory: object) -> None:
+        if self._map_dir_combo is None:
+            return
+        rel = config.normalize_map_directory(directory)
+        index = self._map_dir_combo.findData(rel)
+        if index < 0:
+            self._map_dir_combo.addItem(config.map_directory_display_name(rel), rel)
+            index = self._map_dir_combo.findData(rel)
+        if index >= 0:
+            self._map_dir_combo.blockSignals(True)
+            self._map_dir_combo.setCurrentIndex(index)
+            self._map_dir_combo.blockSignals(False)
+
+    def _select_map_file_combo_value(self, map_file: object) -> None:
+        if self._map_file_combo is None:
+            return
+        rel = config.normalize_map_file(map_file)
+        index = self._map_file_combo.findData(rel)
+        if index < 0:
+            self._map_file_combo.addItem(f"missing: {config.map_display_name(rel)}", rel)
+            index = self._map_file_combo.findData(rel)
+        if index >= 0:
+            self._map_file_combo.setCurrentIndex(index)
+
+    def _refresh_map_file_combo(self, preferred: object | None = None) -> None:
+        if self._map_file_combo is None:
+            return
+        current = config.normalize_map_file(
+            preferred if preferred is not None else self._map_file_combo.currentData()
+        )
+        if preferred is not None:
+            self._set_map_directory_value(config.map_directory_for_file(current))
+        self._map_file_combo.blockSignals(True)
+        self._map_file_combo.clear()
+        files = config.available_map_files_in_directory(self._current_map_directory_from_combo())
+        if files:
+            for rel in files:
+                self._map_file_combo.addItem(config.map_display_name(rel), rel)
+            if current not in files and os.path.isfile(config.resolve_app_path(current)):
+                self._map_file_combo.addItem(config.map_display_name(current), current)
+            elif current not in files:
+                current = files[0]
+            self._map_file_combo.setEnabled(True)
+        else:
+            fallback = current or config.DEFAULT_CONFIG.get("MAP_FILE", config.DEFAULT_MAP_FILE)
+            self._map_file_combo.addItem(config.map_display_name(fallback), fallback)
+            self._map_file_combo.setEnabled(True)
+        self._map_file_combo.blockSignals(False)
+        self._select_map_file_combo_value(current)
+        self._sync_map_file_tooltip()
+
+    def _on_choose_map_file(self) -> None:
+        selected, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "选择底图文件",
+            config.resolve_app_path(self._current_map_directory_from_combo()) or config.ensure_maps_dir(),
+            "地图图片 (*.png *.jpg *.jpeg *.webp *.bmp)",
+        )
+        if not selected:
+            return
+        try:
+            rel = config.import_map_file(selected, destination_dir=self._current_map_directory_from_combo())
+        except Exception as exc:
+            styled_info(self, "选择底图失败", f"无法导入底图文件：{exc}")
+            return
+
+        if self._map_file_combo is not None:
+            self._refresh_map_file_combo(rel)
+
+        toast(self, "底图已加入 maps/，点击应用并重启后生效；自定义底图可能导致路线/标注偏移")
+
+    def _set_map_combo_value(self, map_file: object) -> None:
+        if self._map_file_combo is None:
+            return
+        rel = config.normalize_map_file(map_file)
+        self._set_map_directory_value(config.map_directory_for_file(rel))
+        self._refresh_map_file_combo(rel)
+
+    def _sync_map_file_tooltip(self) -> None:
+        if self._map_file_combo is None:
+            return
+        if not config.available_map_files():
+            self._map_file_combo.setToolTip("请把底图文件放入 maps 文件夹后重启")
+        else:
+            self._map_file_combo.setToolTip("保存后需要重启生效；自定义底图可能导致路线/标注偏移")
+
+    def _build_annotation_file_row(self) -> QWidget:
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 6, 0)
+        layout.setSpacing(8)
+
+        label = QLabel("标注文件")
+        label.setObjectName("FieldLabel")
+        layout.addWidget(label)
+
+        combo = QComboBox()
+        combo.setFixedHeight(28)
+        combo.setMinimumWidth(220)
+        combo.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        current = config.selected_annotation_file_from_settings()
+        files = config.available_annotation_files()
+        for rel in files:
+            combo.addItem(config.annotation_display_name(rel), rel)
+        if current not in files:
+            prefix = "缺失：" if not os.path.isfile(config.resolve_app_path(current)) else ""
+            combo.addItem(f"{prefix}{config.annotation_display_name(current)}", current)
+        self._annotation_file_combo = combo
+        self._initial_values["ANNOTATION_FILE"] = current
+        self._set_annotation_combo_value(current)
+        combo.currentIndexChanged.connect(lambda _index: self._sync_annotation_file_tooltip())
+        layout.addWidget(combo)
+
+        choose_btn = QPushButton("选择文件")
+        choose_btn.setFixedHeight(28)
+        choose_btn.clicked.connect(self._on_choose_annotation_file)
+        layout.addWidget(choose_btn)
+
+        layout.addStretch()
+        self._sync_annotation_file_tooltip()
+        return row
+
+    def _on_choose_annotation_file(self) -> None:
+        selected, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "选择标注数据文件",
+            config.ensure_annotations_dir(),
+            "标注数据 (*.json)",
+        )
+        if not selected:
+            return
+        try:
+            rel = config.import_annotation_file(selected)
+        except Exception as exc:
+            styled_info(self, "选择标注失败", f"无法导入标注数据文件：{exc}")
+            return
+        if self._annotation_file_combo is not None:
+            if self._annotation_file_combo.findData(rel) < 0:
+                self._annotation_file_combo.addItem(config.annotation_display_name(rel), rel)
+            self._set_annotation_combo_value(rel)
+        toast(self, "标注文件已加入 annotations/，点击应用后生效")
+
+    def _set_annotation_combo_value(self, annotation_file: object) -> None:
+        if self._annotation_file_combo is None:
+            return
+        rel = config.normalize_annotation_file(annotation_file)
+        index = self._annotation_file_combo.findData(rel)
+        if index < 0:
+            self._annotation_file_combo.addItem(f"缺失：{config.annotation_display_name(rel)}", rel)
+            index = self._annotation_file_combo.findData(rel)
+        if index >= 0:
+            self._annotation_file_combo.setCurrentIndex(index)
+        self._sync_annotation_file_tooltip()
+
+    def _sync_annotation_file_tooltip(self) -> None:
+        if self._annotation_file_combo is None:
+            return
+        rel = self._annotation_file_combo.currentData()
+        path = config.resolve_app_path(rel)
+        if path and os.path.isfile(path):
+            self._annotation_file_combo.setToolTip("保存后用于地图标注显示和编辑")
+        else:
+            self._annotation_file_combo.setToolTip("未找到标注文件，可选择 JSON 文件导入 annotations/")
+
     def _build_minimap_row(self) -> QWidget:
         row = QWidget()
         layout = QHBoxLayout(row)
@@ -891,6 +1327,9 @@ class SettingsDialog(QDialog):
             elif name == strings.ANNOTATION_REFRESH_POINTS:
                 btn.setToolTip(strings.ANNOTATION_REFRESH_POINTS_TOOLTIP)
                 btn.clicked.connect(self.annotation_refresh_requested.emit)
+            elif name == "路线转换":
+                btn.setToolTip("批量把旧路线 JSON 另存为当前元数据格式")
+                btn.clicked.connect(self._on_route_converter_clicked)
             else:
                 btn.clicked.connect(
                     lambda _=False, n=name: styled_info(self, n, f"“{n}”功能尚未实现。")
@@ -898,6 +1337,11 @@ class SettingsDialog(QDialog):
             card_layout.addWidget(btn)
         card_layout.addStretch()
         return card
+
+    def _on_route_converter_clicked(self) -> None:
+        dialog = RouteFormatConverterDialog(self)
+        center_dialog(dialog, self)
+        dialog.exec()
 
     def _on_quark_download_clicked(self) -> None:
         url = str(getattr(config, "QUARK_DOWNLOAD_URL", "") or "").strip()
@@ -1245,7 +1689,7 @@ class SettingsDialog(QDialog):
         annotation_panel = getattr(parent, "annotation_panel", None)
         if annotation_panel is not None:
             try:
-                annotation_panel.load_index(config.app_path("tools", "points_all", "points.json"))
+                annotation_panel.load_index(config.selected_annotation_path_from_settings())
                 annotation_panel.set_preferences(parent.annotation_type_ids)
             except Exception:
                 pass
@@ -1333,6 +1777,15 @@ class SettingsDialog(QDialog):
                 )
                 return None
 
+        if self._map_file_combo is not None:
+            selected_map = self._map_file_combo.currentData()
+            if selected_map:
+                result["MAP_FILE"] = config.normalize_map_file(selected_map)
+        if self._annotation_file_combo is not None:
+            selected_annotation = self._annotation_file_combo.currentData()
+            if selected_annotation:
+                result["ANNOTATION_FILE"] = config.normalize_annotation_file(selected_annotation)
+
         if self._route_multi_color_checkbox is not None:
             result["ROUTE_MULTI_COLOR_ENABLED"] = self._route_multi_color_checkbox.isChecked()
         if self._route_special_lines_follow_checkbox is not None:
@@ -1382,6 +1835,8 @@ class SettingsDialog(QDialog):
 
     def _changed_restart_fields(self, values: dict) -> list[str]:
         changed: list[str] = []
+        if "MAP_FILE" in values and str(values["MAP_FILE"]) != self._initial_values.get("MAP_FILE", ""):
+            changed.append("底图")
         for key, new_val in values.items():
             field = FIELD_INDEX.get(key)
             if field is None or not field.needs_restart:
@@ -1451,6 +1906,8 @@ class SettingsDialog(QDialog):
         self._reset_hotkey_to_default()
         for key, editor in self._opacity_editors.items():
             editor.setText(str(config.DEFAULT_CONFIG.get(key, 1.0)))
+        self._refresh_map_file_combo(config.DEFAULT_CONFIG.get("MAP_FILE", config.DEFAULT_MAP_FILE))
+        self._set_annotation_combo_value(config.DEFAULT_CONFIG.get("ANNOTATION_FILE", config.DEFAULT_ANNOTATION_FILE))
 
     def _is_on_title_bar(self, global_pos: QPoint) -> bool:
         local = self._title_bar.mapFromGlobal(global_pos)

@@ -9,8 +9,9 @@ from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QWidget
 
-from base import TrackState
-from route_manager import NODE_TYPE_COLLECT, NODE_TYPE_TELEPORT, NODE_TYPE_VIRTUAL, RouteManager
+from ui_island.services.route_manager import NODE_TYPE_COLLECT, NODE_TYPE_TELEPORT, NODE_TYPE_VIRTUAL, RouteManager
+from ui_island.state.tracking import TrackState
+from ui_island.views.map_coordinates import MapCoordinateAdapter
 
 from ..design import strings
 from ..widgets.context_menu import ContextMenuItem, show_context_menu
@@ -31,6 +32,7 @@ class MapView(QWidget):
     change_point_annotation_requested = Signal(str, int)
     delete_point_annotation_requested = Signal(str, int)
     change_point_node_type_requested = Signal(str, int, object)
+    change_point_order_requested = Signal(str, int)
     change_annotation_requested = Signal(str, int)
     add_annotation_to_route_requested = Signal(str, int)
     delete_annotation_requested = Signal(str, int)
@@ -50,6 +52,7 @@ class MapView(QWidget):
     def __init__(self, route_mgr: RouteManager, parent=None) -> None:
         super().__init__(parent)
         self.route_mgr = route_mgr
+        self._coord_adapter = MapCoordinateAdapter.for_current_config()
         self._pixmap: QPixmap | None = None
         self._base_map: np.ndarray | None = None
         self._map_w = 0
@@ -91,6 +94,13 @@ class MapView(QWidget):
         self._base_map = base_map_bgr
         self._map_h, self._map_w = base_map_bgr.shape[:2]
 
+    def set_coordinate_adapter(self, adapter: MapCoordinateAdapter | None) -> None:
+        self._coord_adapter = adapter or MapCoordinateAdapter.for_current_config()
+        self._refresh_from_last_frame()
+
+    def coordinate_adapter(self) -> MapCoordinateAdapter:
+        return self._coord_adapter
+
     def set_center_locked(self, locked: bool) -> None:
         self._center_locked = locked
         if locked and self._last_player is not None:
@@ -121,7 +131,8 @@ class MapView(QWidget):
 
     def focus_map_position(self, x: int, y: int) -> None:
         self._center_locked = False
-        self._view_center = QPointF(float(x), float(y))
+        map_x, map_y = self._coord_adapter.to_current(float(x), float(y))
+        self._view_center = QPointF(map_x, map_y)
         self._refresh_from_last_frame()
 
     def update_frame(
@@ -168,12 +179,21 @@ class MapView(QWidget):
             draw_player_y,
             drawing_route=drawing_route,
             auto_visit=auto_visit,
+            coord_adapter=self._coord_adapter,
         )
         if drawing_active:
             self.guide_hint_changed.emit(None)
         else:
             self.guide_hint_changed.emit(
-                self.route_mgr.guide_hint_for_view(cx, cy, vx1, vy1, crop.shape[1], crop.shape[0])
+                self.route_mgr.guide_hint_for_view(
+                    cx,
+                    cy,
+                    vx1,
+                    vy1,
+                    crop.shape[1],
+                    crop.shape[0],
+                    coord_adapter=self._coord_adapter,
+                )
             )
 
         local_x = cx - vx1
@@ -310,6 +330,16 @@ class MapView(QWidget):
             draw_rect.top() + rel_y * draw_rect.height(),
         )
 
+    def _widget_to_internal_map(self, pos: QPointF) -> tuple[float, float] | None:
+        mapped = self._widget_to_map(pos)
+        if mapped is None:
+            return None
+        return self._coord_adapter.to_internal(mapped[0], mapped[1])
+
+    def _internal_map_to_widget(self, map_x: float, map_y: float) -> QPointF | None:
+        current_x, current_y = self._coord_adapter.to_current(map_x, map_y)
+        return self._map_to_widget(current_x, current_y)
+
     def set_route_drawing_context(self, context: dict | None) -> None:
         self._drawing_context = dict(context) if isinstance(context, dict) else None
         if not self._is_drawing_active() or self._is_drawing_paused():
@@ -344,7 +374,8 @@ class MapView(QWidget):
         if not isinstance(point, dict):
             return None
         try:
-            return int(float(point["x"])), int(float(point["y"]))
+            x, y = self._coord_adapter.to_current(float(point["x"]), float(point["y"]))
+            return int(x), int(y)
         except (KeyError, TypeError, ValueError):
             return None
 
@@ -387,10 +418,10 @@ class MapView(QWidget):
         if not isinstance(last, dict):
             return
         try:
-            start = self._map_to_widget(float(last["x"]), float(last["y"]))
+            start = self._internal_map_to_widget(float(last["x"]), float(last["y"]))
         except (KeyError, TypeError, ValueError):
             return
-        end = self._map_to_widget(self._hover_map_pos[0], self._hover_map_pos[1])
+        end = self._internal_map_to_widget(self._hover_map_pos[0], self._hover_map_pos[1])
         if start is None or end is None:
             return
         node_type = str(self._drawing_context.get("node_type") or NODE_TYPE_COLLECT)
@@ -483,7 +514,7 @@ class MapView(QWidget):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        self._hover_map_pos = self._widget_to_map(event.position())
+        self._hover_map_pos = self._widget_to_internal_map(event.position())
 
         if self._drawing_drag_index is not None:
             if self._left_press_pos is not None and not self._left_dragging:
@@ -603,7 +634,7 @@ class MapView(QWidget):
                 event.accept()
                 return
 
-            mapped = self._widget_to_map(event.position())
+            mapped = self._widget_to_internal_map(event.position())
             should_add = (
                 self._is_drawing_active()
                 and not self._is_drawing_paused()
@@ -671,10 +702,13 @@ class MapView(QWidget):
             return None
         ratio = self._last_crop_size[0] / draw_rect.width()
         map_threshold = max(6.0, _HIT_RADIUS_WIDGET_PX * ratio)
-        return self.route_mgr.hit_test_point(mapped[0], mapped[1], map_threshold)
+        try:
+            return self.route_mgr.hit_test_point(mapped[0], mapped[1], map_threshold, coord_adapter=self._coord_adapter)
+        except TypeError:
+            return self.route_mgr.hit_test_point(mapped[0], mapped[1], map_threshold)
 
     def _hit_test_draft_node(self, widget_pos: QPointF) -> int | None:
-        mapped = self._widget_to_map(widget_pos)
+        mapped = self._widget_to_internal_map(widget_pos)
         context = self._drawing_context if isinstance(self._drawing_context, dict) else None
         if mapped is None or not context:
             return None
@@ -682,7 +716,7 @@ class MapView(QWidget):
         if draw_rect.width() <= 0 or self._last_crop_size[0] <= 0:
             return None
         ratio = self._last_crop_size[0] / draw_rect.width()
-        map_threshold = max(6.0, _HIT_RADIUS_WIDGET_PX * ratio)
+        map_threshold = self._coord_adapter.threshold_to_internal(max(6.0, _HIT_RADIUS_WIDGET_PX * ratio))
         best: tuple[float, int] | None = None
         for index, point in enumerate(context.get("points") or []):
             if not isinstance(point, dict):
@@ -708,7 +742,15 @@ class MapView(QWidget):
             return None
         ratio = self._last_crop_size[0] / draw_rect.width()
         map_threshold = max(6.0, _HIT_RADIUS_WIDGET_PX * ratio)
-        return self.route_mgr.hit_test_annotation_point(mapped[0], mapped[1], map_threshold)
+        try:
+            return self.route_mgr.hit_test_annotation_point(
+                mapped[0],
+                mapped[1],
+                map_threshold,
+                coord_adapter=self._coord_adapter,
+            )
+        except TypeError:
+            return self.route_mgr.hit_test_annotation_point(mapped[0], mapped[1], map_threshold)
 
     def _route_point_undo_context_items(self) -> list[ContextMenuItem]:
         if self._is_drawing_active() or not self._route_point_move_undo_available:
@@ -746,6 +788,10 @@ class MapView(QWidget):
                         strings.CHANGE_POINT_NODE_TYPE_MENU_LABEL,
                         lambda rid=route_id, idx=draft_hit, gpos=QPoint(event.globalPos()):
                         self.change_point_node_type_requested.emit(rid, idx, gpos),
+                    ),
+                    ContextMenuItem(
+                        strings.CHANGE_POINT_ORDER_MENU_LABEL,
+                        lambda rid=route_id, idx=draft_hit: self.change_point_order_requested.emit(rid, idx),
                     ),
                 ]
                 if has_annotation:
@@ -799,6 +845,10 @@ class MapView(QWidget):
                     lambda rid=route_id, idx=point_index, gpos=QPoint(event.globalPos()):
                     self.change_point_node_type_requested.emit(rid, idx, gpos),
                 ),
+                ContextMenuItem(
+                    strings.CHANGE_POINT_ORDER_MENU_LABEL,
+                    lambda rid=route_id, idx=point_index: self.change_point_order_requested.emit(rid, idx),
+                ),
             ]
             if has_annotation:
                 items.append(
@@ -849,7 +899,7 @@ class MapView(QWidget):
             event.accept()
             return
 
-        mapped = self._widget_to_map(pos)
+        mapped = self._widget_to_internal_map(pos)
         if mapped is None:
             event.ignore()
             return

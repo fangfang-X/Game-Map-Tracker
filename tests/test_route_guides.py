@@ -1,4 +1,4 @@
-import json
+﻿import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from route_manager import (
+from ui_island.services.route_manager import (
     _GuideTarget,
     _config_opacity,
     _distance_to_segment,
@@ -174,7 +174,7 @@ class RouteGuideTests(unittest.TestCase):
 
             with (
                 patch("config.ROUTE_POINTER_ARROW_VISIBLE", False),
-                patch("route_manager._draw_spaced_direction_arrows") as draw_arrows,
+                patch("ui_island.services.route_manager._draw_spaced_direction_arrows") as draw_arrows,
             ):
                 manager.draw_on(canvas, 0, 0, 180, player_x=0, player_y=0, auto_visit=False)
 
@@ -188,7 +188,7 @@ class RouteGuideTests(unittest.TestCase):
 
             with (
                 patch("config.ROUTE_POINTER_ARROW_VISIBLE", True),
-                patch("route_manager._draw_spaced_direction_arrows") as draw_arrows,
+                patch("ui_island.services.route_manager._draw_spaced_direction_arrows") as draw_arrows,
             ):
                 manager.draw_on(canvas, 0, 0, 180, player_x=0, player_y=0, auto_visit=False)
 
@@ -1107,7 +1107,7 @@ class RouteGuideTests(unittest.TestCase):
             manager = RouteManager(str(Path(tmp) / "routes"))
             manager._annotation_points_cache = {"flower": []}
 
-            with patch("route_manager._default_annotation_points_file", return_value=str(points_file)):
+            with patch("ui_island.services.route_manager._default_annotation_points_file", return_value=str(points_file)):
                 self.assertTrue(manager.add_annotation_point(10, 20, "flower", "Sunflower"))
 
             payload = json.loads(points_file.read_text(encoding="utf-8"))
@@ -1137,7 +1137,7 @@ class RouteGuideTests(unittest.TestCase):
             )
             manager = RouteManager(str(Path(tmp) / "routes"))
 
-            with patch("route_manager._default_annotation_points_file", return_value=str(points_file)):
+            with patch("ui_island.services.route_manager._default_annotation_points_file", return_value=str(points_file)):
                 self.assertTrue(manager.add_annotation_point(3, 4, "ore", "Ore"))
 
             payload = json.loads(points_file.read_text(encoding="utf-8"))
@@ -1160,7 +1160,7 @@ class RouteGuideTests(unittest.TestCase):
             before = points_file.read_text(encoding="utf-8")
             manager = RouteManager(str(Path(tmp) / "routes"))
 
-            with patch("route_manager._default_annotation_points_file", return_value=str(points_file)):
+            with patch("ui_island.services.route_manager._default_annotation_points_file", return_value=str(points_file)):
                 self.assertFalse(manager.add_annotation_point(10, 20, "", "Sunflower"))
                 self.assertFalse(manager.add_annotation_point(10, 20, "missing", "Missing"))
             self.assertEqual(points_file.read_text(encoding="utf-8"), before)
@@ -1170,7 +1170,7 @@ class RouteGuideTests(unittest.TestCase):
             manager = RouteManager(str(Path(tmp) / "routes"))
             missing_file = Path(tmp) / "missing.json"
 
-            with patch("route_manager._default_annotation_points_file", return_value=str(missing_file)):
+            with patch("ui_island.services.route_manager._default_annotation_points_file", return_value=str(missing_file)):
                 self.assertFalse(manager.add_annotation_point(10, 20, "flower", "Sunflower"))
 
     def test_hit_test_annotation_point_returns_raw_points_index(self) -> None:
@@ -1194,7 +1194,7 @@ class RouteGuideTests(unittest.TestCase):
             manager = RouteManager(str(Path(tmp) / "routes"))
             manager.set_annotation_type_ids(["flower"])
 
-            with patch("route_manager._default_annotation_points_file", return_value=str(points_file)):
+            with patch("ui_island.services.route_manager._default_annotation_points_file", return_value=str(points_file)):
                 hit = manager.hit_test_annotation_point(102, 101, 5)
 
             self.assertIsNotNone(hit)
@@ -1223,7 +1223,7 @@ class RouteGuideTests(unittest.TestCase):
             manager = RouteManager(str(Path(tmp) / "routes"))
             manager._annotation_points_cache = {"flower": []}
 
-            with patch("route_manager._default_annotation_points_file", return_value=str(points_file)):
+            with patch("ui_island.services.route_manager._default_annotation_points_file", return_value=str(points_file)):
                 self.assertTrue(manager.change_annotation_point_type("flower", 0, "ore", "Ore"))
 
             payload = json.loads(points_file.read_text(encoding="utf-8"))
@@ -1259,7 +1259,7 @@ class RouteGuideTests(unittest.TestCase):
             )
             manager = RouteManager(str(Path(tmp) / "routes"))
 
-            with patch("route_manager._default_annotation_points_file", return_value=str(points_file)):
+            with patch("ui_island.services.route_manager._default_annotation_points_file", return_value=str(points_file)):
                 self.assertTrue(manager.delete_annotation_point("flower", 0))
 
             payload = json.loads(points_file.read_text(encoding="utf-8"))
@@ -1352,7 +1352,7 @@ class RouteGuideTests(unittest.TestCase):
             category.mkdir()
             manager = RouteManager(str(base))
 
-            with patch("route_manager.secrets.randbelow", side_effect=[7, 7, 8]):
+            with patch("ui_island.services.route_manager.secrets.randbelow", side_effect=[7, 7, 8]):
                 self.assertTrue(manager.create_route("采集", "路线一"))
                 self.assertTrue(manager.create_route("采集", "路线二"))
 
@@ -1412,7 +1412,7 @@ class RouteGuideTests(unittest.TestCase):
             before = points_file.read_text(encoding="utf-8")
             manager = RouteManager(str(Path(tmp) / "routes"))
 
-            with patch("route_manager._default_annotation_points_file", return_value=str(points_file)):
+            with patch("ui_island.services.route_manager._default_annotation_points_file", return_value=str(points_file)):
                 self.assertFalse(manager.change_annotation_point_type("flower", 2, "flower", "Sunflower"))
                 self.assertFalse(manager.change_annotation_point_type("flower", 0, "missing", "Missing"))
                 self.assertFalse(manager.delete_annotation_point("flower", 2))

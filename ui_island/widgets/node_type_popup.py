@@ -8,7 +8,7 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QApplication, QButtonGroup, QFrame, QRadioButton, QVBoxLayout
 
-from route_manager import NODE_TYPE_COLLECT, NODE_TYPE_TELEPORT, NODE_TYPE_VIRTUAL, NODE_TYPES
+from ui_island.services.route_manager import NODE_TYPE_COLLECT, NODE_TYPE_TELEPORT, NODE_TYPE_VIRTUAL, NODE_TYPES
 
 from ..design import strings, theme
 

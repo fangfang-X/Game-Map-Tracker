@@ -5,7 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QWidget
 
-from base import TrackState
+from ui_island.state.tracking import TrackState
 
 from ..design import qss, strings
 from .route_widgets import StatusDot

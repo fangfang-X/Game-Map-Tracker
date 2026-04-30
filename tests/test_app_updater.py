@@ -10,7 +10,7 @@ import requests
 
 import config
 import config_defaults
-import updater_main
+from scripts import updater_main
 from scripts import generate_update_manifest, write_default_config
 from ui_island.services import app_updater
 
@@ -599,6 +599,55 @@ class AppUpdaterTests(unittest.TestCase):
 
         self.assertEqual(manifest["obsolete_config_keys"], ["ROUTE_RECENT_LIMIT", "LEGACY_FLAG"])
 
+    def test_generate_manifest_deletes_legacy_root_big_map_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            Path(root, "demo.txt").write_bytes(b"demo")
+            Path(root, "big_map.png").write_bytes(b"legacy-map")
+            Path(root, "big_map_17173.png").write_bytes(b"other-map")
+            maps_dir = Path(root, "maps")
+            maps_dir.mkdir()
+            Path(maps_dir, "README.md").write_text("maps go here", encoding="utf-8")
+            Path(maps_dir, "big_map.png").write_bytes(b"user-map")
+
+            manifest = generate_update_manifest.build_manifest(
+                root,
+                version="0.2.0",
+                base_url="https://example.test/update/",
+                notes="",
+                requires_launcher_update=False,
+                prompt_update=False,
+                force_update_prompt=False,
+            )
+
+        paths = {item["path"] for item in manifest["files"]}
+        self.assertIn("demo.txt", paths)
+        self.assertNotIn("maps/README.md", paths)
+        self.assertNotIn("big_map.png", paths)
+        self.assertNotIn("big_map_17173.png", paths)
+        self.assertNotIn("maps/big_map.png", paths)
+        self.assertEqual(manifest["delete"], ["big_map.png"])
+
+    def test_generate_manifest_can_explicitly_include_protected_map_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = Path(root, "maps", "big_map_17173.png")
+            target.parent.mkdir()
+            target.write_bytes(b"publish-once")
+
+            manifest = generate_update_manifest.build_manifest(
+                root,
+                version="0.2.0",
+                base_url="https://example.test/update/",
+                notes="",
+                requires_launcher_update=False,
+                prompt_update=False,
+                force_update_prompt=False,
+                include_paths=["maps/big_map_17173.png"],
+            )
+
+        self.assertEqual([item["path"] for item in manifest["files"]], ["maps/big_map_17173.png"])
+
     def test_write_default_config_uses_clean_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp, "config.json")
@@ -638,6 +687,7 @@ class AppUpdaterTests(unittest.TestCase):
                             "https://github.test/app-manifest.json",
                             "",
                         ],
+                        "APP_ENABLE_ROUTE_VERSIONS": ["0.1.2", "0.1.3", "0.1.3", ""],
                         "SECRET_TOKEN": "do-not-ship",
                         "ROUTE_DEFAULT_COLOR": "#ff00ff",
                     }
@@ -672,6 +722,7 @@ class AppUpdaterTests(unittest.TestCase):
                     "https://gitee.test/app-manifest.json",
                     "https://github.test/app-manifest.json",
                 ],
+                "APP_ENABLE_ROUTE_VERSIONS": ["0.1.2", "0.1.3"],
             },
         )
         self.assertNotIn("SECRET_TOKEN", manifest["runtime_config"])
@@ -759,6 +810,12 @@ class AppUpdaterTests(unittest.TestCase):
             icon = Path(root, "tools", "points_icon", "icons.json")
             icon.parent.mkdir(parents=True)
             icon.write_text("{}", encoding="utf-8")
+            annotation = Path(root, "annotations", "points.json")
+            annotation.parent.mkdir(parents=True)
+            annotation.write_text("{}", encoding="utf-8")
+            user_map = Path(root, "maps", "custom.png")
+            user_map.parent.mkdir(parents=True)
+            user_map.write_bytes(b"map")
 
             manifest = generate_update_manifest.build_manifest(
                 root,
@@ -778,6 +835,8 @@ class AppUpdaterTests(unittest.TestCase):
         self.assertNotIn("tools/points_all/points.json", paths)
         self.assertNotIn("tools/points_get/.cache_17173_locations.json", paths)
         self.assertNotIn("tools/points_icon/icons.json", paths)
+        self.assertNotIn("annotations/points.json", paths)
+        self.assertNotIn("maps/custom.png", paths)
 
     def test_manifest_generator_excludes_protected_publish_paths(self) -> None:
         self.assertTrue(generate_update_manifest.is_user_data_path("tools/json_txt_converter.exe"))
@@ -785,6 +844,8 @@ class AppUpdaterTests(unittest.TestCase):
         self.assertTrue(generate_update_manifest.is_user_data_path("tools/points_get/.cache_17173_locations.json"))
         self.assertTrue(generate_update_manifest.is_user_data_path("tools/points_icon/icons.json"))
         self.assertTrue(generate_update_manifest.is_user_data_path("routes/demo.json"))
+        self.assertTrue(generate_update_manifest.is_user_data_path("annotations/points.json"))
+        self.assertTrue(generate_update_manifest.is_user_data_path("maps/custom.png"))
 
     def test_parse_manifest_respects_listed_routes_and_points(self) -> None:
         payload = {
@@ -1102,6 +1163,33 @@ class AppUpdaterTests(unittest.TestCase):
         self.assertEqual(result.changed_files, ())
         self.assertEqual(result.delete_files, ())
         self.assertEqual(result.skipped_conflicts, ("routes/demo.json",))
+
+    def test_build_update_plan_delete_forces_user_data_even_when_locally_modified(self) -> None:
+        manifest = app_updater.AppUpdateManifest(
+            version="0.2.0",
+            notes="",
+            files=(),
+            delete=("routes/bad.json", "annotations/bad-pack"),
+        )
+        installed = {"files": {"routes/bad.json": {"sha256": _sha256_bytes(b"original")}}}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config.BASE_DIR = tmp
+            route = Path(tmp, "routes", "bad.json")
+            route.parent.mkdir(parents=True)
+            route.write_bytes(b"user edited")
+            directory = Path(tmp, "annotations", "bad-pack")
+            directory.mkdir(parents=True)
+            Path(directory, "points.json").write_text("{}", encoding="utf-8")
+
+            result = app_updater.build_update_plan(
+                manifest,
+                current_version="0.1.0",
+                installed_manifest=installed,
+            )
+
+        self.assertEqual(result.delete_files, ("routes/bad.json", "annotations/bad-pack"))
+        self.assertEqual(result.skipped_conflicts, ())
 
     def test_build_update_plan_allows_json_txt_converter_when_manifest_lists_it(self) -> None:
         payload = b"converter"
@@ -1478,7 +1566,7 @@ class AppUpdaterTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with patch("updater_main.os.replace", side_effect=OSError("locked")):
+            with patch("scripts.updater_main.os.replace", side_effect=OSError("locked")):
                 with self.assertRaises(OSError):
                     updater_main.install_update_job(job_path)
 

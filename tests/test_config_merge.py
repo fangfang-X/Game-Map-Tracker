@@ -277,6 +277,95 @@ class ConfigMergeTests(unittest.TestCase):
         self.assertEqual(merged["UNKNOWN_BUT_ALLOWED"], "keep")
         self.assertIn("REMOVED_BY_MANIFEST", repaired)
 
+    def test_legacy_root_big_map_config_migrates_to_maps_folder(self) -> None:
+        merged, repaired = config.merge_config_payload(
+            config.DEFAULT_CONFIG,
+            {"CONFIG_VERSION": 2, "LOGIC_MAP_PATH": "big_map.png"},
+        )
+
+        self.assertEqual(repaired, [])
+        self.assertEqual(merged["MAP_FILE"], config.DEFAULT_MAP_FILE)
+        self.assertEqual(merged["LOGIC_MAP_PATH"], config.DEFAULT_MAP_FILE)
+
+    def test_maps_big_map_config_is_preserved_as_user_map(self) -> None:
+        merged, repaired = config.merge_config_payload(
+            config.DEFAULT_CONFIG,
+            {"CONFIG_VERSION": 2, "LOGIC_MAP_PATH": "maps/custom/big_map.png"},
+        )
+
+        self.assertEqual(repaired, [])
+        self.assertEqual(merged["MAP_FILE"], "maps/custom/big_map.png")
+        self.assertEqual(merged["LOGIC_MAP_PATH"], "maps/custom/big_map.png")
+
+    def test_cleanup_legacy_root_big_map_preserves_user_maps_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root_map = Path(tmp, "big_map.png")
+            user_map = Path(tmp, "maps", "big_map.png")
+            user_map.parent.mkdir()
+            root_map.write_bytes(b"legacy")
+            user_map.write_bytes(b"user")
+
+            removed = config.cleanup_legacy_root_big_map(tmp)
+
+            self.assertTrue(removed)
+            self.assertFalse(root_map.exists())
+            self.assertEqual(user_map.read_bytes(), b"user")
+
+    def test_import_map_file_copies_into_maps_without_overwriting(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp, "app")
+            source_dir = Path(tmp, "external")
+            base_dir.mkdir()
+            source_dir.mkdir()
+            first = Path(source_dir, "custom.png")
+            second = Path(source_dir, "custom.jpg")
+            duplicate = Path(source_dir, "custom.png")
+            first.write_bytes(b"first")
+            second.write_bytes(b"second")
+
+            rel = config.import_map_file(str(first), base_dir=str(base_dir))
+            self.assertEqual(rel, "maps/custom.png")
+            self.assertEqual(Path(base_dir, "maps", "custom.png").read_bytes(), b"first")
+
+            duplicate.write_bytes(b"duplicate")
+            rel_duplicate = config.import_map_file(str(duplicate), base_dir=str(base_dir))
+            self.assertEqual(rel_duplicate, "maps/custom_2.png")
+            self.assertEqual(Path(base_dir, "maps", "custom_2.png").read_bytes(), b"duplicate")
+
+            rel_second = config.import_map_file(str(second), base_dir=str(base_dir))
+            self.assertEqual(rel_second, "maps/custom.jpg")
+            self.assertEqual(Path(base_dir, "maps", "custom.jpg").read_bytes(), b"second")
+
+    def test_import_map_file_returns_existing_maps_file_without_copying(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp, "app")
+            existing = Path(base_dir, "maps", "picked.webp")
+            existing.parent.mkdir(parents=True)
+            existing.write_bytes(b"picked")
+
+            rel = config.import_map_file(str(existing), base_dir=str(base_dir))
+
+            self.assertEqual(rel, "maps/picked.webp")
+            self.assertEqual(existing.read_bytes(), b"picked")
+
+    def test_annotation_file_defaults_and_import_copy_into_annotations(self) -> None:
+        self.assertEqual(config.DEFAULT_CONFIG["ANNOTATION_FILE"], "annotations/points.json")
+        with tempfile.TemporaryDirectory() as tmp:
+            old_base = config.BASE_DIR
+            try:
+                config.BASE_DIR = str(Path(tmp, "app"))
+                Path(config.BASE_DIR).mkdir()
+                source = Path(tmp, "external_points.json")
+                source.write_text("{}", encoding="utf-8")
+
+                rel = config.import_annotation_file(str(source))
+
+                self.assertEqual(rel, "annotations/external_points.json")
+                self.assertTrue(Path(config.BASE_DIR, rel).exists())
+                self.assertEqual(config.normalize_annotation_file("custom.json"), "annotations/custom.json")
+            finally:
+                config.BASE_DIR = old_base
+
     def test_merge_config_file_backs_up_and_rewrites_corrupt_json(self) -> None:
         defaults = {"CONFIG_VERSION": 2, "SIDEBAR_WIDTH": 270}
         with tempfile.TemporaryDirectory() as tmp:

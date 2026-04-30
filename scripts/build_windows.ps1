@@ -72,9 +72,9 @@ try {
         Invoke-Python -m pip install -r requirements.txt pyinstaller
     }
 
-    Invoke-Python -m PyInstaller --noconfirm GMT-N.spec
-    Invoke-Python -m PyInstaller --noconfirm GMT-N-Updater.spec
-    Invoke-Python -m PyInstaller --noconfirm JSON-TXT-Converter.spec
+    Invoke-Python -m PyInstaller --noconfirm packaging/GMT-N.spec
+    Invoke-Python -m PyInstaller --noconfirm packaging/GMT-N-Updater.spec
+    Invoke-Python -m PyInstaller --noconfirm packaging/JSON-TXT-Converter.spec
 
     $Dist = Join-Path $Root "dist\GMT-N"
     if (-not (Test-Path $Dist)) {
@@ -92,10 +92,17 @@ try {
         throw "PyInstaller did not create $ConverterExe"
     }
 
-    foreach ($file in @("big_map.png", "README.md")) {
+    foreach ($file in @("README.md")) {
         if (Test-Path $file) {
             Copy-Item $file -Destination $Dist -Force
         }
+    }
+
+    $MapsDist = Join-Path $Dist "maps"
+    New-Item -ItemType Directory -Force -Path $MapsDist | Out-Null
+    $MapsReadme = Join-Path $Root "maps\README.md"
+    if (Test-Path $MapsReadme) {
+        Copy-Item $MapsReadme -Destination $MapsDist -Force
     }
 
     Invoke-Python "scripts/write_default_config.py" (Join-Path $Dist "config.json")

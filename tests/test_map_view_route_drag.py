@@ -8,6 +8,8 @@ from PySide6.QtCore import QEvent, QPointF, QRectF, Qt
 from PySide6.QtGui import QKeyEvent, QMouseEvent, QPixmap
 from PySide6.QtWidgets import QApplication
 
+import config
+from ui_island.views.map_coordinates import MapCoordinateAdapter
 from ui_island.design import strings
 from ui_island.views.map_view import MapView
 
@@ -19,6 +21,12 @@ class _FakeRouteManager:
 
     def route_for_id(self, route_id: str) -> dict | None:
         return self.routes.get(route_id)
+
+    def point_visited(self, _route_id: str, _point_index: int) -> bool:
+        return False
+
+    def route_point_has_annotation(self, _route_id: str, _point_index: int) -> bool:
+        return False
 
     def hit_test_point(self, _x: float, _y: float, _threshold: float):
         if not self.hit_route:
@@ -36,6 +44,7 @@ class MapViewRouteDragTests(unittest.TestCase):
 
     def _view(self, route_mgr: _FakeRouteManager | None = None) -> MapView:
         view = MapView(route_mgr or _FakeRouteManager())
+        view.set_coordinate_adapter(MapCoordinateAdapter.for_map_file(config.DEFAULT_MAP_FILE))
         view.resize(200, 200)
         view._pixmap = QPixmap(200, 200)
         view._last_draw_rect = QRectF(0, 0, 200, 200)
@@ -186,6 +195,49 @@ class MapViewRouteDragTests(unittest.TestCase):
 
         labels = [item.text for item in captured["items"] if not item.separator and item.visible]
         self.assertNotIn(strings.MAP_ADD_POINT_WITH_ANNOTATION_MENU_LABEL, labels)
+
+    def test_route_node_menu_includes_change_order_and_emits_signal(self) -> None:
+        view = self._view()
+        captured: dict[str, object] = {}
+
+        with patch(
+            "ui_island.views.map_view.show_context_menu",
+            lambda _parent, _global_pos, items, *, object_name="": captured.__setitem__("items", list(items)),
+        ):
+            view.contextMenuEvent(self._ContextMenuEvent(QPointF(10, 10)))
+
+        items = captured["items"]
+        labels = [item.text for item in items if not item.separator and item.visible]
+        self.assertIn(strings.CHANGE_POINT_ORDER_MENU_LABEL, labels)
+        emitted: list[tuple[str, int]] = []
+        view.change_point_order_requested.connect(lambda route_id, index: emitted.append((route_id, index)))
+        order_item = next(item for item in items if item.text == strings.CHANGE_POINT_ORDER_MENU_LABEL)
+        order_item.callback()
+        self.assertEqual(emitted, [("route-1", 0)])
+
+    def test_drawing_node_menu_includes_change_order_and_emits_signal(self) -> None:
+        view = self._view()
+        view.set_route_drawing_context({
+            "active": True,
+            "route_id": "route-1",
+            "points": [{"x": 10, "y": 10}],
+        })
+        captured: dict[str, object] = {}
+
+        with patch(
+            "ui_island.views.map_view.show_context_menu",
+            lambda _parent, _global_pos, items, *, object_name="": captured.__setitem__("items", list(items)),
+        ):
+            view.contextMenuEvent(self._ContextMenuEvent(QPointF(10, 10)))
+
+        items = captured["items"]
+        labels = [item.text for item in items if not item.separator and item.visible]
+        self.assertIn(strings.CHANGE_POINT_ORDER_MENU_LABEL, labels)
+        emitted: list[tuple[str, int]] = []
+        view.change_point_order_requested.connect(lambda route_id, index: emitted.append((route_id, index)))
+        order_item = next(item for item in items if item.text == strings.CHANGE_POINT_ORDER_MENU_LABEL)
+        order_item.callback()
+        self.assertEqual(emitted, [("route-1", 0)])
 
 
 if __name__ == "__main__":

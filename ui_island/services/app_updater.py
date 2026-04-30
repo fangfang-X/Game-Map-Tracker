@@ -46,6 +46,7 @@ RUNTIME_CONFIG_STRING_KEYS = (
     "FEEDBACK_QQ_GROUP",
 )
 RUNTIME_CONFIG_LIST_KEYS = ("APP_UPDATE_MANIFEST_URLS",)
+RUNTIME_CONFIG_STRING_LIST_KEYS = ("APP_ENABLE_ROUTE_VERSIONS",)
 
 
 @dataclass(frozen=True)
@@ -264,6 +265,13 @@ def sanitize_runtime_config(payload: Any) -> dict[str, object]:
     clean_manifest_urls = _dedupe_runtime_strings(manifest_urls)
     if clean_manifest_urls:
         runtime_config["APP_UPDATE_MANIFEST_URLS"] = clean_manifest_urls
+
+    for key in RUNTIME_CONFIG_STRING_LIST_KEYS:
+        value = payload.get(key)
+        if isinstance(value, list):
+            clean_values = _dedupe_runtime_strings([item for item in value if isinstance(item, str)])
+            if clean_values:
+                runtime_config[key] = clean_values
 
     return runtime_config
 
@@ -518,15 +526,6 @@ def build_update_plan(
         local_path = _app_path(path)
         if not local_path.exists():
             continue
-        installed_hash = installed_hashes.get(path)
-        if installed_hash:
-            try:
-                if _sha256_file(local_path) != installed_hash:
-                    conflicts.append(path)
-                    continue
-            except OSError:
-                conflicts.append(path)
-                continue
         safe_delete.append(path)
         requires_restart = requires_restart or _is_restart_file(path, manifest)
 
@@ -774,7 +773,10 @@ def install_non_restart_update(plan: AppUpdateCheckResult, staging: Path) -> App
         for path in plan.delete_files:
             target = _app_path(path)
             if target.exists():
-                target.unlink()
+                if target.is_dir():
+                    shutil.rmtree(target)
+                else:
+                    target.unlink()
                 installed_files.append(path)
 
         _write_installed_manifest(plan.manifest)

@@ -8,7 +8,8 @@ import cv2
 import numpy as np
 
 import config
-from base import BaseTracker, TrackResult, TrackState
+from ui_island.services.image_io import imread_unicode
+from ui_island.state.tracking import BaseTracker, TrackResult, TrackState
 
 
 _EDGE_GUARD_PX = 24
@@ -31,7 +32,7 @@ _GLOBAL_RETRY_INTERVAL_FRAMES = 5
 
 class SiftTracker(BaseTracker):
     def __init__(self) -> None:
-        self.logic_map_bgr = cv2.imread(config.LOGIC_MAP_PATH)
+        self.logic_map_bgr = imread_unicode(config.LOGIC_MAP_PATH)
         if self.logic_map_bgr is None:
             raise FileNotFoundError(f"Could not load logic map: {config.LOGIC_MAP_PATH}")
 

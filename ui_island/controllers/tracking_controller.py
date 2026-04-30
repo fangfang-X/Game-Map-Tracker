@@ -7,7 +7,7 @@ import time
 import mss
 import numpy as np
 
-from base import TrackResult, TrackState
+from ui_island.state.tracking import TrackResult, TrackState
 
 
 class TrackingController:
@@ -182,6 +182,11 @@ class TrackingController:
 
     def tracker_loop(self) -> None:
         while self.window._running:
+            if not getattr(self.window.tracker, "map_available", True):
+                self.window._frame_ready.emit(TrackResult(TrackState.SEARCHING, latency_ms=0.0))
+                time.sleep(self.current_refresh_ms() / 1000.0)
+                continue
+
             if self.window.isMaximized():
                 self.window._frame_ready.emit(TrackResult(TrackState.SEARCHING, latency_ms=0.0))
                 time.sleep(self.current_refresh_ms() / 1000.0)

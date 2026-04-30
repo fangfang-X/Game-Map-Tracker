@@ -10,7 +10,7 @@ import numpy as np
 from PySide6.QtCore import QRect
 from PySide6.QtWidgets import QCheckBox, QFrame, QLineEdit, QPushButton
 
-from base import TrackResult, TrackState
+from ui_island.state.tracking import TrackResult, TrackState
 
 
 @dataclass
@@ -97,7 +97,15 @@ class RouteDrawingState:
         self.dirty = False
         self.added_count = 0
 
-    def begin(self, *, route_id: str, category: str, name: str, points: list[dict], loop: bool = False) -> None:
+    def begin(
+        self,
+        *,
+        route_id: str,
+        category: str,
+        name: str,
+        points: list[dict],
+        loop: bool = False,
+    ) -> None:
         copied = deepcopy(points)
         self.reset()
         self.active = True
