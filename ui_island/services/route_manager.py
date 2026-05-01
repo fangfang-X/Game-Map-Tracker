@@ -2038,7 +2038,15 @@ class RouteManager:
             print(f"Save progress after point reorder failed: {e}")
         return True
 
-    def set_point_annotation(self, route_ref: str, point_index: int, type_id: str, type_name: str) -> bool:
+    def set_point_annotation(
+        self,
+        route_ref: str,
+        point_index: int,
+        type_id: str,
+        type_name: str,
+        *,
+        node_type: str | None = None,
+    ) -> bool:
         route_id = self.resolve_route_id(route_ref)
         if route_id is None:
             return False
@@ -2057,9 +2065,12 @@ class RouteManager:
 
         old_type_id = point.get("typeId", None)
         old_type = point.get("type", None)
+        old_node_type = point.get("node_type", None)
         old_labels = [item.get("label", None) if isinstance(item, dict) else None for item in points]
         point["typeId"] = type_id
         point["type"] = type_name
+        if node_type is not None:
+            point["node_type"] = _node_type({"node_type": node_type})
         _apply_route_node_auto_labels(points)
         try:
             self._write_route_file(category, route.get("display_name", ""), route)
@@ -2072,6 +2083,10 @@ class RouteManager:
                 point.pop("type", None)
             else:
                 point["type"] = old_type
+            if old_node_type is None:
+                point.pop("node_type", None)
+            else:
+                point["node_type"] = old_node_type
             for item, old_label in zip(points, old_labels):
                 if not isinstance(item, dict):
                     continue

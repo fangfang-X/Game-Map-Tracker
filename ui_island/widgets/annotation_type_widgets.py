@@ -20,6 +20,9 @@ class AnnotationGroupSection(QWidget):
         *,
         columns: int = 2,
         annotation_layer: str = "",
+        show_batch_actions: bool = False,
+        select_all_tooltip: str = "",
+        invert_select_tooltip: str = "",
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -31,6 +34,10 @@ class AnnotationGroupSection(QWidget):
         self.setAttribute(Qt.WA_StyledBackground, True)
         if self._annotation_layer:
             self.setProperty("annotationLayer", self._annotation_layer)
+        self.header_label: QLabel | None = None
+        self.add_btn: QPushButton | None = None
+        self.select_all_btn: QPushButton | None = None
+        self.invert_select_btn: QPushButton | None = None
 
         layout = QVBoxLayout(self)
         if self._annotation_layer:
@@ -46,14 +53,7 @@ class AnnotationGroupSection(QWidget):
             self.header.setProperty("annotationLayer", self._annotation_layer)
             self.header.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             self.header.clicked.connect(self.toggle_expanded)
-            header_button_layout = QHBoxLayout(self.header)
-            header_button_layout.setContentsMargins(10, 0, 0, 0)
-            header_button_layout.setSpacing(0)
-
-            self.header_label = QLabel(self.header)
-            self.header_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-            self.header_label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
-            header_button_layout.addWidget(self.header_label, stretch=1)
+            header_button_layout = self._build_header_button_layout()
 
             self.add_btn = QPushButton("+", self.header)
             self.add_btn.setObjectName("SectionHeaderAddButton")
@@ -71,8 +71,18 @@ class AnnotationGroupSection(QWidget):
                 self.header.setProperty("annotationLayer", self._annotation_layer)
             self.header.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             self.header.clicked.connect(self.toggle_expanded)
-            self.header_label = None
-            self.add_btn = None
+            if show_batch_actions:
+                header_button_layout = self._build_header_button_layout()
+                self.select_all_btn = self._build_header_batch_button(
+                    "全选",
+                    select_all_tooltip or "选中当前分类所有标注",
+                )
+                header_button_layout.addWidget(self.select_all_btn)
+                self.invert_select_btn = self._build_header_batch_button(
+                    "反选",
+                    invert_select_tooltip or "反转当前分类标注选中状态",
+                )
+                header_button_layout.addWidget(self.invert_select_btn)
         layout.addWidget(self.header)
 
         self.body = QWidget(self)
@@ -88,6 +98,26 @@ class AnnotationGroupSection(QWidget):
         layout.addWidget(self.body)
 
         self._sync_state()
+
+    def _build_header_button_layout(self) -> QHBoxLayout:
+        header_button_layout = QHBoxLayout(self.header)
+        header_button_layout.setContentsMargins(10, 0, 0, 0)
+        header_button_layout.setSpacing(0)
+
+        self.header_label = QLabel(self.header)
+        self.header_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.header_label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        header_button_layout.addWidget(self.header_label, stretch=1)
+        return header_button_layout
+
+    def _build_header_batch_button(self, text: str, tooltip: str) -> QPushButton:
+        button = QPushButton(text, self.header)
+        button.setObjectName("SectionHeaderBatchButton")
+        button.setProperty("compact", True)
+        button.setToolTip(tooltip)
+        button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        button.setFixedWidth(42)
+        return button
 
     def add_row(self, row: QWidget, index: int) -> None:
         self.grid.addWidget(row, index // self._columns, index % self._columns)

@@ -36,3 +36,6 @@ dist/
 !docs/test/**/*.pyd
 !docs/update/**/*.pyd
 
+routes/采样分析添加标注/采样分析添加标注1.json
+routes_converted/采样分析添加标注1.json
+.gitignore

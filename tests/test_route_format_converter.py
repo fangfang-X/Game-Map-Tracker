@@ -5,12 +5,17 @@ from pathlib import Path
 
 from tools.fetch_17173_points import latlng_to_xy
 from tools.route_format_converter import (
+    RouteAnnotationOptions,
+    annotate_route_folder,
+    annotate_route_payload,
     convert_old_big_map_route_payload,
     convert_old_big_map_routes_in_place,
     convert_route_folder,
+    default_route_teleport_type_ids,
     normalize_route_payload,
     old_big_map_xy_to_17173_xy,
 )
+from ui_island.services.annotation_matcher import AnnotationMatchIndex
 from ui_island.services import resource_metadata
 
 _MAP_HASH = "a" * 32
@@ -225,6 +230,159 @@ class RouteFormatConverterTests(unittest.TestCase):
             self.assertEqual(payload["format_version"], resource_metadata.APP_FORMAT_VERSION)
             self.assertIn(resource_metadata.APP_FORMAT_VERSION, payload["enable_versions"])
             self.assertNotIn("coordinate_space_id", payload)
+
+    def test_annotate_route_payload_matches_annotations_and_preserves_manual_fields(self) -> None:
+        annotation_payload = {
+            "types": [
+                {"typeId": "flower", "type": "花"},
+                {"typeId": "teleport", "type": "魔力之源（传送点）"},
+                {"typeId": "ore", "type": "矿"},
+            ],
+            "pointsByType": {
+                "flower": [{"x": 10, "y": 10, "label": "花点"}],
+                "teleport": [{"x": 40, "y": 40, "label": "传送点"}],
+                "ore": [{"x": 13, "y": 10, "label": "矿点"}],
+            },
+        }
+        matcher = AnnotationMatchIndex(annotation_payload)
+        route = {
+            "name": "路线",
+            "points": [
+                {"x": 11, "y": 10},
+                {"x": 40, "y": 40},
+                {"x": 100, "y": 100},
+                {"x": 10, "y": 10, "node_type": "virtual"},
+                {"x": 10, "y": 10, "typeId": "manual", "type": "手动", "node_type": "collect"},
+                {"x": 11, "y": 10, "node_type": "teleport"},
+            ],
+        }
+        options = RouteAnnotationOptions(
+            annotation_file="unused",
+            match_type_ids=("flower", "teleport", "ore"),
+            teleport_type_ids=("teleport",),
+            max_radius=12,
+            ambiguous_distance_delta=5,
+        )
+
+        converted, stats, messages = annotate_route_payload(route, matcher, options)
+
+        points = converted["points"]
+        self.assertEqual(points[0]["typeId"], "flower")
+        self.assertEqual(points[0]["type"], "花")
+        self.assertEqual(points[0]["node_type"], "collect")
+        self.assertEqual(points[1]["typeId"], "teleport")
+        self.assertEqual(points[1]["node_type"], "teleport")
+        self.assertEqual(points[2], {"x": 100, "y": 100, "node_type": "collect"})
+        self.assertEqual(points[3], {"x": 10, "y": 10, "node_type": "virtual"})
+        self.assertEqual(points[4]["typeId"], "manual")
+        self.assertEqual(points[5]["node_type"], "teleport")
+        self.assertEqual(points[5]["typeId"], "flower")
+        self.assertEqual(stats.matched, 3)
+        self.assertEqual(stats.unmatched, 1)
+        self.assertEqual(stats.existing_skipped, 1)
+        self.assertEqual(stats.virtual_skipped, 1)
+        self.assertEqual(stats.teleports, 2)
+        self.assertEqual(stats.suspicious, 2)
+        self.assertTrue(any("[可疑]" in message for message in messages))
+
+    def test_annotate_route_folder_writes_new_files_with_original_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "in"
+            output_dir = root / "out"
+            input_dir.mkdir()
+            annotation_file = root / "points.json"
+            annotation_file.write_text(
+                json.dumps(
+                    {
+                        "types": [{"typeId": "flower", "type": "花"}],
+                        "pointsByType": {"flower": [{"x": 10, "y": 10}]},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (input_dir / "route.json").write_text(
+                json.dumps({"name": "路线", "points": [{"x": 10, "y": 10}]}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            report = annotate_route_folder(
+                input_dir,
+                output_dir,
+                RouteAnnotationOptions(
+                    annotation_file=str(annotation_file),
+                    match_type_ids=("flower",),
+                    max_radius=12,
+                ),
+            )
+
+            self.assertEqual(report.converted, 1)
+            self.assertEqual(report.annotation_matched, 1)
+            payload = json.loads((output_dir / "route.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload["points"][0]["typeId"], "flower")
+            self.assertFalse((output_dir / "route_新格式.json").exists())
+
+    def test_annotate_route_folder_in_place_skips_when_nothing_changed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "in"
+            input_dir.mkdir()
+            annotation_file = root / "points.json"
+            annotation_file.write_text(
+                json.dumps(
+                    {
+                        "types": [{"typeId": "flower", "type": "花"}],
+                        "pointsByType": {"flower": [{"x": 10, "y": 10}]},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            source = input_dir / "route.json"
+            source.write_text(
+                json.dumps({"name": "路线", "points": [{"x": 10, "y": 10, "typeId": "old"}]}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            report = annotate_route_folder(
+                input_dir,
+                None,
+                RouteAnnotationOptions(
+                    annotation_file=str(annotation_file),
+                    match_type_ids=("flower",),
+                    max_radius=12,
+                ),
+                in_place=True,
+            )
+
+            self.assertEqual(report.converted, 0)
+            self.assertEqual(report.skipped, 1)
+            payload = json.loads(source.read_text(encoding="utf-8"))
+            self.assertEqual(payload["points"][0]["typeId"], "old")
+
+    def test_default_route_teleport_type_ids_uses_teleport_folder_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            annotation_file = root / "points.json"
+            annotation_file.write_text(
+                json.dumps(
+                    {
+                        "types": [
+                            {"typeId": "tp", "type": "魔力之源（传送点）"},
+                            {"typeId": "flower", "type": "花"},
+                        ],
+                        "pointsByType": {},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            teleport_dir = root / "teleport"
+            teleport_dir.mkdir()
+            (teleport_dir / "魔力之源（传送点）.json").write_text("{}", encoding="utf-8")
+
+            self.assertEqual(default_route_teleport_type_ids(annotation_file, teleport_dir), ["tp"])
 
 
 if __name__ == "__main__":

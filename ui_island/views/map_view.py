@@ -25,6 +25,7 @@ class MapView(QWidget):
     relocate_requested = Signal(int, int)
     manual_view_changed = Signal()
     add_point_requested = Signal(int, int)
+    add_route_node_requested = Signal(int, int, object)
     add_annotation_requested = Signal(int, int)
     add_annotated_point_requested = Signal(int, int)
     delete_point_requested = Signal(str, int)
@@ -1029,8 +1030,16 @@ class MapView(QWidget):
                     lambda x=map_x, y=map_y: self.add_annotation_requested.emit(x, y),
                 ),
                 ContextMenuItem(
-                    strings.MAP_ADD_POINT_MENU_LABEL,
-                    lambda x=map_x, y=map_y: self.add_point_requested.emit(x, y),
+                    strings.MAP_ADD_COLLECT_POINT_MENU_LABEL,
+                    lambda x=map_x, y=map_y: self.add_route_node_requested.emit(x, y, NODE_TYPE_COLLECT),
+                ),
+                ContextMenuItem(
+                    strings.MAP_ADD_TELEPORT_POINT_MENU_LABEL,
+                    lambda x=map_x, y=map_y: self.add_route_node_requested.emit(x, y, NODE_TYPE_TELEPORT),
+                ),
+                ContextMenuItem(
+                    strings.MAP_ADD_GUIDE_POINT_MENU_LABEL,
+                    lambda x=map_x, y=map_y: self.add_route_node_requested.emit(x, y, NODE_TYPE_VIRTUAL),
                 ),
                 ContextMenuItem(
                     strings.MAP_ADD_POINT_WITH_ANNOTATION_MENU_LABEL,

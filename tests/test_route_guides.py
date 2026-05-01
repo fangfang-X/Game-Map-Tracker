@@ -855,6 +855,57 @@ class RouteGuideTests(unittest.TestCase):
             self.assertEqual(payload["points"][0]["label"], "向阳花 1")
             self.assertNotIn("visited", payload["points"][0])
 
+    def test_set_point_annotation_can_update_node_type_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            category = base / "采集"
+            category.mkdir()
+            route_file = category / "路线.json"
+            route_file.write_text(
+                json.dumps(
+                    {
+                        "id": "2026010101",
+                        "name": "路线",
+                        "points": [{"x": 1, "y": 2, "node_type": "virtual"}],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            manager = RouteManager(str(base))
+
+            self.assertTrue(manager.set_point_annotation("2026010101", 0, "flower", "向阳花", node_type="collect"))
+
+            payload = json.loads(route_file.read_text(encoding="utf-8"))
+            self.assertEqual(payload["points"][0]["typeId"], "flower")
+            self.assertEqual(payload["points"][0]["node_type"], "collect")
+
+    def test_set_point_annotation_rolls_back_node_type_on_write_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            category = base / "采集"
+            category.mkdir()
+            route_file = category / "路线.json"
+            route_file.write_text(
+                json.dumps(
+                    {
+                        "id": "2026010101",
+                        "name": "路线",
+                        "points": [{"x": 1, "y": 2, "node_type": "virtual"}],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            manager = RouteManager(str(base))
+
+            with patch.object(manager, "_write_route_file", side_effect=RuntimeError("boom")):
+                self.assertFalse(manager.set_point_annotation("2026010101", 0, "flower", "向阳花", node_type="collect"))
+
+            point = manager.route_for_id("2026010101")["points"][0]
+            self.assertNotIn("typeId", point)
+            self.assertEqual(point["node_type"], "virtual")
+
     def test_route_point_mutations_refresh_auto_labels_without_overwriting_manual_names(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

@@ -172,7 +172,23 @@ class MapViewRouteDragTests(unittest.TestCase):
 
         items = captured["items"]
         labels = [item.text for item in items if not item.separator and item.visible]
+        self.assertNotIn(strings.MAP_ADD_POINT_MENU_LABEL, labels)
+        self.assertIn(strings.MAP_ADD_COLLECT_POINT_MENU_LABEL, labels)
+        self.assertIn(strings.MAP_ADD_TELEPORT_POINT_MENU_LABEL, labels)
+        self.assertIn(strings.MAP_ADD_GUIDE_POINT_MENU_LABEL, labels)
         self.assertIn(strings.MAP_ADD_POINT_WITH_ANNOTATION_MENU_LABEL, labels)
+
+        emitted_nodes: list[tuple[int, int, object]] = []
+        view.add_route_node_requested.connect(lambda x, y, node_type: emitted_nodes.append((x, y, node_type)))
+        for label in (
+            strings.MAP_ADD_COLLECT_POINT_MENU_LABEL,
+            strings.MAP_ADD_TELEPORT_POINT_MENU_LABEL,
+            strings.MAP_ADD_GUIDE_POINT_MENU_LABEL,
+        ):
+            item = next(item for item in items if item.text == label)
+            item.callback()
+        self.assertEqual(emitted_nodes, [(12, 34, "collect"), (12, 34, "teleport"), (12, 34, "virtual")])
+
         emitted: list[tuple[int, int]] = []
         view.add_annotated_point_requested.connect(lambda x, y: emitted.append((x, y)))
         annotated_item = next(item for item in items if item.text == strings.MAP_ADD_POINT_WITH_ANNOTATION_MENU_LABEL)

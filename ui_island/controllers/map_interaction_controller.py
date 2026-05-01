@@ -7,11 +7,19 @@ from typing import TYPE_CHECKING
 import config
 from ..design import strings
 from ..dialogs import toast
-from ..dialogs.annotation_type_picker import open_annotation_type_picker
+from ..dialogs.annotation_type_picker import open_annotation_match_candidate_picker, open_annotation_type_picker
 from ..dialogs.insert_point_dialog import open_insert_point_dialog
 from ..dialogs.point_order_dialog import open_point_order_dialog
 from ..dialogs.settings_dialog import styled_confirm, styled_info
 from ..services.annotation_preferences import normalize_type_ids
+from ..services.annotation_matcher import (
+    AMBIGUOUS_DISTANCE_DELTA,
+    DEFAULT_MATCH_RADIUS,
+    AnnotationMatchCandidate,
+    AnnotationMatchIndex,
+    suspicious_candidates,
+)
+from ..services.route_manager import NODE_TYPE_COLLECT, NODE_TYPE_TELEPORT, NODE_TYPE_VIRTUAL
 from ..widgets.node_type_popup import node_type_label, normalize_node_type, show_node_type_popup
 
 if TYPE_CHECKING:
@@ -41,12 +49,191 @@ class MapInteractionController:
         except Exception:
             pass
 
+    def _annotation_file_path(self) -> str:
+        return config.selected_annotation_path_from_settings()
+
+    def _annotation_match_index(self) -> AnnotationMatchIndex | None:
+        path = self._annotation_file_path()
+        if not path:
+            return None
+        try:
+            return AnnotationMatchIndex.from_file(path)
+        except Exception as exc:
+            print(f"Load annotation matcher failed {path}: {exc}")
+            return None
+
+    def _teleport_type_ids(self) -> set[str]:
+        path = self._annotation_file_path()
+        if not path:
+            return set()
+        try:
+            from tools.route_format_converter import default_route_teleport_type_ids
+
+            return set(default_route_teleport_type_ids(path))
+        except Exception as exc:
+            print(f"Load route teleport type ids failed {path}: {exc}")
+            return set()
+
+    def _all_annotation_type_ids(self) -> set[str]:
+        result: set[str] = set()
+        for item in self.window.route_mgr.annotation_type_items():
+            if not isinstance(item, dict):
+                continue
+            type_id = str(item.get("typeId") or "").strip()
+            if type_id:
+                result.add(type_id)
+        return result
+
+    @staticmethod
+    def _filter_annotation_items(items: list[dict], type_ids: set[str]) -> list[dict]:
+        if not type_ids:
+            return []
+        return [dict(item) for item in items if str(item.get("typeId") or "") in type_ids]
+
+    @staticmethod
+    def _point_fields_from_candidate(candidate: AnnotationMatchCandidate, node_type: str) -> dict:
+        return {
+            "typeId": candidate.type_id,
+            "type": candidate.type_name or candidate.type_id,
+            "node_type": node_type,
+        }
+
+    def _node_type_for_annotation_type(self, type_id: str) -> str:
+        return NODE_TYPE_TELEPORT if str(type_id or "") in self._teleport_type_ids() else NODE_TYPE_COLLECT
+
+    def _annotation_type_name(self, type_id: str) -> str:
+        type_id = str(type_id or "").strip()
+        if not type_id:
+            return ""
+        for item in self.window.route_mgr.annotation_type_items():
+            if not isinstance(item, dict) or str(item.get("typeId") or "").strip() != type_id:
+                continue
+            return str(item.get("type") or type_id).strip() or type_id
+        return type_id
+
+    def _point_fields_for_annotation_type(
+        self,
+        type_id: str,
+        type_name: str | None = None,
+        source_fields: dict | None = None,
+    ) -> dict:
+        type_id = str(type_id or "").strip()
+        type_name = str(type_name or self._annotation_type_name(type_id) or type_id).strip() or type_id
+        fields = dict(source_fields or {})
+        fields["typeId"] = type_id
+        fields["type"] = type_name
+        fields["node_type"] = self._node_type_for_annotation_type(type_id)
+        return fields
+
+    def _candidate_type_ids_for_node_type(self, node_type: str) -> set[str]:
+        all_ids = self._all_annotation_type_ids()
+        teleport_ids = self._teleport_type_ids()
+        if node_type == NODE_TYPE_TELEPORT:
+            return all_ids & teleport_ids
+        if node_type == NODE_TYPE_COLLECT:
+            return all_ids - teleport_ids
+        return set()
+
+    def _annotation_fields_for_route_node(self, x: int, y: int, node_type: str) -> dict | None:
+        allowed_ids = self._candidate_type_ids_for_node_type(node_type)
+        items = self._filter_annotation_items(self.window.route_mgr.annotation_type_items(), allowed_ids)
+        if not allowed_ids or not items:
+            styled_info(
+                self.window,
+                strings.ANNOTATION_TYPE_PICKER_TITLE,
+                strings.ANNOTATION_TYPE_PICKER_EMPTY,
+            )
+            return None
+
+        matcher = self._annotation_match_index()
+        if matcher is not None:
+            candidates = matcher.find_candidates(
+                x,
+                y,
+                allowed_ids,
+                max_radius=DEFAULT_MATCH_RADIUS,
+            )
+            if candidates:
+                ambiguous = suspicious_candidates(candidates, distance_delta=AMBIGUOUS_DISTANCE_DELTA)
+                if ambiguous:
+                    selected = open_annotation_match_candidate_picker(
+                        self.window,
+                        candidates,
+                        title=strings.ANNOTATION_TYPE_PICKER_TITLE,
+                    )
+                    if selected is None:
+                        return None
+                    return self._point_fields_from_candidate(selected, node_type)
+                return self._point_fields_from_candidate(candidates[0], node_type)
+
+        selected = open_annotation_type_picker(self.window, items, "")
+        if selected is None:
+            return None
+        type_id = str(selected.get("typeId") or "").strip()
+        if not type_id:
+            return None
+        return {
+            "typeId": type_id,
+            "type": str(selected.get("type") or type_id).strip() or type_id,
+            "node_type": node_type,
+        }
+
     def on_add_point_requested(self, x: int, y: int) -> None:
         drawing = getattr(self.window, "route_drawing_state", None)
         if drawing is not None and drawing.active:
             self.window.route_panel_controller.append_drawing_point_from_context_menu(x, y)
             return
         self.add_point_to_routes(x, y)
+
+    def add_route_node_from_context_menu(
+        self,
+        x: int,
+        y: int,
+        node_type: object,
+        route_ids: list[str] | None = None,
+        show_dialog: bool = True,
+    ) -> None:
+        normalized = normalize_node_type(node_type)
+        drawing = getattr(self.window, "route_drawing_state", None)
+        if drawing is not None and drawing.active and drawing.paused:
+            return
+        candidate_route_ids = (
+            self.window.route_mgr.visible_route_ids()
+            if route_ids is None
+            else [route_id for route_id in route_ids if route_id]
+        )
+        if not (drawing is not None and drawing.active) and not candidate_route_ids:
+            styled_info(
+                self.window,
+                strings.INSERT_POINT_EMPTY_TITLE,
+                strings.INSERT_POINT_EMPTY_BODY,
+            )
+            return
+        point_fields: dict = {"node_type": normalized}
+        if normalized in {NODE_TYPE_COLLECT, NODE_TYPE_TELEPORT}:
+            annotation_fields = self._annotation_fields_for_route_node(x, y, normalized)
+            if annotation_fields is None:
+                return
+            point_fields.update(annotation_fields)
+
+        if drawing is not None and drawing.active:
+            self.window.route_panel_controller.append_drawing_point_from_context_menu(
+                x,
+                y,
+                point_fields=point_fields,
+                node_type_override=normalized,
+            )
+            return
+        if route_ids is None and show_dialog:
+            self.add_point_to_routes(x, y, point_fields=point_fields)
+        else:
+            self.add_point_to_routes(
+                x,
+                y,
+                route_ids=route_ids,
+                show_dialog=show_dialog,
+                point_fields=point_fields,
+            )
 
     def add_annotation_point(self, x: int, y: int) -> None:
         route_mgr = self.window.route_mgr
@@ -91,9 +278,20 @@ class MapInteractionController:
 
         toast(self.window, strings.MAP_ADD_ANNOTATION_SUCCESS_FMT.format(name=type_name))
 
-    def add_annotated_point_to_routes(self, x: int, y: int) -> None:
+    def add_annotated_point_to_routes(
+        self,
+        x: int,
+        y: int,
+        route_ids: list[str] | None = None,
+        show_dialog: bool = True,
+    ) -> None:
         route_mgr = self.window.route_mgr
-        if not route_mgr.visible_route_ids():
+        candidate_route_ids = (
+            route_mgr.visible_route_ids()
+            if route_ids is None
+            else [route_id for route_id in route_ids if route_id]
+        )
+        if not candidate_route_ids:
             styled_info(
                 self.window,
                 strings.INSERT_POINT_EMPTY_TITLE,
@@ -118,7 +316,17 @@ class MapInteractionController:
         if not type_id:
             return
         type_name = str(selected.get("type") or type_id).strip() or type_id
-        self.add_point_to_routes(x, y, point_fields={"typeId": type_id, "type": type_name})
+        point_fields = self._point_fields_for_annotation_type(type_id, type_name)
+        if route_ids is None and show_dialog:
+            self.add_point_to_routes(x, y, point_fields=point_fields)
+        else:
+            self.add_point_to_routes(
+                x,
+                y,
+                route_ids=route_ids,
+                show_dialog=show_dialog,
+                point_fields=point_fields,
+            )
 
     def change_map_annotation(self, type_id: str, point_index: int) -> None:
         route_mgr = self.window.route_mgr
@@ -178,11 +386,18 @@ class MapInteractionController:
                 strings.MAP_ANNOTATION_ROUTE_FAIL_BODY,
             )
             return
+        type_id = str(point.get("typeId") or type_id).strip()
+        point_fields = self._point_fields_for_annotation_type(type_id, point.get("type"), point)
         drawing = getattr(self.window, "route_drawing_state", None)
         if drawing is not None and drawing.active:
-            self.window.route_panel_controller.append_drawing_point_from_context_menu(x, y, point_fields=point)
+            self.window.route_panel_controller.append_drawing_point_from_context_menu(
+                x,
+                y,
+                point_fields=point_fields,
+                node_type_override=point_fields.get("node_type"),
+            )
             return
-        self.add_point_to_routes(x, y, point_fields=point)
+        self.add_point_to_routes(x, y, point_fields=point_fields)
 
     def delete_map_annotation(self, type_id: str, point_index: int) -> None:
         confirmed = styled_confirm(
@@ -506,7 +721,10 @@ class MapInteractionController:
     def change_point_annotation(self, route_id: str, point_index: int) -> None:
         drawing = getattr(self.window, "route_drawing_state", None)
         if drawing is not None and drawing.active and route_id == drawing.route_id:
-            self.window.route_panel_controller.change_drawing_point_annotation(point_index)
+            self.window.route_panel_controller.change_drawing_point_annotation(
+                point_index,
+                node_type_resolver=self._node_type_for_annotation_type,
+            )
             return
         if self._has_route_notes_draft(route_id):
             route_mgr = self.window.route_mgr
@@ -527,9 +745,10 @@ class MapInteractionController:
                 return
             type_id = str(selected.get("typeId") or "")
             type_name = str(selected.get("type") or type_id)
+            node_type = self._node_type_for_annotation_type(type_id)
             controller = self._route_notes_controller()
             setter = getattr(controller, "set_route_notes_point_annotation", None)
-            if not callable(setter) or not setter(route_id, point_index, type_id, type_name):
+            if not callable(setter) or not setter(route_id, point_index, type_id, type_name, node_type=node_type):
                 styled_info(
                     self.window,
                     strings.POINT_ANNOTATION_FAIL_TITLE,
@@ -557,7 +776,8 @@ class MapInteractionController:
 
         type_id = str(selected.get("typeId") or "")
         type_name = str(selected.get("type") or type_id)
-        if not route_mgr.set_point_annotation(route_id, point_index, type_id, type_name):
+        node_type = self._node_type_for_annotation_type(type_id)
+        if not route_mgr.set_point_annotation(route_id, point_index, type_id, type_name, node_type=node_type):
             styled_info(
                 self.window,
                 strings.POINT_ANNOTATION_FAIL_TITLE,

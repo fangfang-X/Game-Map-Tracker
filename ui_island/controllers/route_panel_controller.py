@@ -31,6 +31,7 @@ from ..dialogs.point_order_dialog import open_point_order_dialog
 from ..dialogs.route_notes_dialog import RouteNodeEditorPanel, RouteNotesDialog, edit_route_notes, route_color_to_hex
 from ..dialogs.settings_dialog import styled_confirm, styled_info
 from ..dialogs.text_input_dialog import prompt_text_input
+from ..services.route_manager import NODE_TYPE_COLLECT, NODE_TYPE_TELEPORT, NODE_TYPE_VIRTUAL
 from ..widgets import ElidedCheckBox, RouteListItem, RouteSection, TrackedRouteItem
 from ..widgets.context_menu import ContextMenuItem, show_context_menu
 from ..widgets.factory import make_route_panel_icon_button, make_route_panel_line_edit
@@ -692,7 +693,7 @@ QCheckBox::indicator:checked:hover {{
         if not isinstance(point_fields, dict):
             return {}
         copied: dict = {}
-        for key in ("label", "type", "typeId", "radius", "sourceId", "manual"):
+        for key in ("label", "type", "typeId", "radius", "sourceId", "manual", "node_type"):
             if key in point_fields:
                 copied[key] = point_fields[key]
         return copied
@@ -703,6 +704,7 @@ QCheckBox::indicator:checked:hover {{
         y: int,
         index_override: int | None = None,
         point_fields: dict | None = None,
+        node_type_override: str | None = None,
     ) -> None:
         state = self.window.route_drawing_state
         if not state.active or state.paused:
@@ -716,13 +718,19 @@ QCheckBox::indicator:checked:hover {{
             "id": self.window.route_mgr.new_route_point_id(),
             "x": int(x),
             "y": int(y),
-            "node_type": state.node_type if state.node_type in {"collect", "teleport", "virtual"} else "collect",
+            "node_type": node_type_override
+            if node_type_override in {"collect", "teleport", "virtual"}
+            else state.node_type
+            if state.node_type in {"collect", "teleport", "virtual"}
+            else "collect",
             "_drawing_new": True,
         }
         if isinstance(annotation, dict):
             if "typeId" in annotation:
                 point["typeId"] = annotation["typeId"]
                 point["type"] = annotation.get("type") or annotation["typeId"]
+            if "node_type" in annotation:
+                point["node_type"] = normalize_node_type(annotation.get("node_type"))
             for key in ("label", "radius", "sourceId", "manual"):
                 if key in annotation:
                     point[key] = annotation[key]
@@ -740,12 +748,18 @@ QCheckBox::indicator:checked:hover {{
         self._mark_drawing_dirty()
         self._sync_route_drawing_ui()
 
-    def append_drawing_point_from_context_menu(self, x: int, y: int, point_fields: dict | None = None) -> None:
+    def append_drawing_point_from_context_menu(
+        self,
+        x: int,
+        y: int,
+        point_fields: dict | None = None,
+        node_type_override: str | None = None,
+    ) -> None:
         state = self.window.route_drawing_state
         if not state.active or state.paused:
             return
         if state.insert_at_end:
-            self.append_drawing_point(x, y, point_fields=point_fields)
+            self.append_drawing_point(x, y, point_fields=point_fields, node_type_override=node_type_override)
             return
 
         suggested = self._drawing_insert_index(x, y)
@@ -771,6 +785,7 @@ QCheckBox::indicator:checked:hover {{
             y,
             index_override=overrides.get(state.route_id, suggested),
             point_fields=point_fields,
+            node_type_override=node_type_override,
         )
 
     def _drawing_resource_xy(self, x: int | float, y: int | float) -> tuple[int, int]:
@@ -1256,7 +1271,7 @@ QCheckBox::indicator:checked:hover {{
         point = state.draft_points[point_index]
         return str(point.get("typeId") or "") if isinstance(point, dict) else ""
 
-    def change_drawing_point_annotation(self, point_index: int) -> None:
+    def change_drawing_point_annotation(self, point_index: int, node_type_resolver=None) -> None:
         state = self.window.route_drawing_state
         if not state.active or not (0 <= point_index < len(state.draft_points)):
             return
@@ -1267,6 +1282,8 @@ QCheckBox::indicator:checked:hover {{
         before = deepcopy(state.draft_points[point_index])
         state.draft_points[point_index]["typeId"] = selected["typeId"]
         state.draft_points[point_index]["type"] = selected["type"]
+        if callable(node_type_resolver):
+            state.draft_points[point_index]["node_type"] = normalize_node_type(node_type_resolver(selected["typeId"]))
         state.undo_stack.append({
             "op": "annotation",
             "index": point_index,
@@ -1786,6 +1803,8 @@ QCheckBox::indicator:checked:hover {{
         point_index: int,
         type_id: str,
         type_name: str,
+        *,
+        node_type: str | None = None,
     ) -> bool:
         nodes = self.route_notes_draft_nodes(route_id)
         if nodes is None or not isinstance(point_index, int) or not (0 <= point_index < len(nodes)):
@@ -1798,6 +1817,8 @@ QCheckBox::indicator:checked:hover {{
             return False
         point["typeId"] = type_id
         point["type"] = str(type_name or type_id).strip() or type_id
+        if node_type is not None:
+            point["node_type"] = normalize_node_type(node_type)
         icon_path = self.window.route_mgr.point_icon_path_for(type_id)
         if icon_path:
             point["icon_path"] = icon_path
@@ -2019,7 +2040,9 @@ QCheckBox::indicator:checked:hover {{
                     lambda _checked=False, known_route_id=route_id: self.jump_to_route_node(known_route_id)
                 )
                 route_item.add_point_btn.clicked.connect(
-                    lambda _checked=False, known_route_id=route_id: self.add_current_position_to_route(known_route_id)
+                    lambda _checked=False, known_route_id=route_id, anchor=route_item.add_point_btn: (
+                        self.show_current_position_add_menu(known_route_id, anchor)
+                    )
                 )
                 self.window._route_checkboxes.setdefault(route_id, []).append(route_item.checkbox)
                 row = index // 2
@@ -2129,9 +2152,7 @@ QCheckBox::indicator:checked:hover {{
         )
         toast(self.window, message.format(index=point_index + 1))
 
-    def add_current_position_to_route(self, route_id: str) -> None:
-        if not self.confirm_exit_route_drawing():
-            return
+    def _current_player_xy_or_warn(self) -> tuple[int, int] | None:
         player_xy = getattr(self.window, "_last_player_xy", None)
         if player_xy is None:
             styled_info(
@@ -2148,6 +2169,82 @@ QCheckBox::indicator:checked:hover {{
                 self.window,
                 "无法添加节点",
                 "当前定位坐标无效，请等待定位稳定后再添加。",
+            )
+            return
+
+        return x, y
+
+    def show_current_position_add_menu(self, route_id: str, anchor: QWidget) -> None:
+        if not self.confirm_exit_route_drawing():
+            return
+        try:
+            global_pos = anchor.mapToGlobal(QPoint(0, anchor.height()))
+        except Exception:
+            global_pos = QPoint(0, 0)
+        show_context_menu(
+            self.window,
+            global_pos,
+            [
+                ContextMenuItem(
+                    strings.MAP_ADD_COLLECT_POINT_MENU_LABEL,
+                    lambda known_route_id=route_id: self.add_current_position_to_route(
+                        known_route_id,
+                        NODE_TYPE_COLLECT,
+                    ),
+                ),
+                ContextMenuItem(
+                    strings.MAP_ADD_TELEPORT_POINT_MENU_LABEL,
+                    lambda known_route_id=route_id: self.add_current_position_to_route(
+                        known_route_id,
+                        NODE_TYPE_TELEPORT,
+                    ),
+                ),
+                ContextMenuItem(
+                    strings.MAP_ADD_GUIDE_POINT_MENU_LABEL,
+                    lambda known_route_id=route_id: self.add_current_position_to_route(
+                        known_route_id,
+                        NODE_TYPE_VIRTUAL,
+                    ),
+                ),
+                ContextMenuItem(
+                    strings.MAP_ADD_POINT_WITH_ANNOTATION_MENU_LABEL,
+                    lambda known_route_id=route_id: self.add_current_position_to_route(
+                        known_route_id,
+                        annotated=True,
+                    ),
+                ),
+            ],
+            object_name="RouteListContextMenu",
+        )
+
+    def add_current_position_to_route(
+        self,
+        route_id: str,
+        node_type: object | None = None,
+        *,
+        annotated: bool = False,
+    ) -> None:
+        player_xy = self._current_player_xy_or_warn()
+        if player_xy is None:
+            return
+        x, y = player_xy
+
+        if annotated:
+            self.window.map_interaction_controller.add_annotated_point_to_routes(
+                x,
+                y,
+                route_ids=[route_id],
+                show_dialog=False,
+            )
+            return
+
+        if node_type is not None:
+            self.window.map_interaction_controller.add_route_node_from_context_menu(
+                x,
+                y,
+                node_type,
+                route_ids=[route_id],
+                show_dialog=False,
             )
             return
 

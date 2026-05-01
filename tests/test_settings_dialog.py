@@ -220,6 +220,52 @@ class SettingsDialogMapTests(unittest.TestCase):
             finally:
                 config.BASE_DIR = old_base_dir
 
+    def test_route_conversion_modes_and_output_strategy_ui_are_unified(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            old_base_dir = config.BASE_DIR
+            try:
+                config.BASE_DIR = tmp
+
+                dialog = RouteFormatConverterDialog(None)
+
+                combo = dialog._mode_combo
+                self.assertIsNotNone(combo)
+                self.assertEqual(combo.count(), 2)
+                self.assertEqual([combo.itemText(index) for index in range(combo.count())], ["旧路线转新格式", "为路线自动添加标注"])
+                self.assertEqual(
+                    [combo.itemData(index) for index in range(combo.count())],
+                    [dialog._MODE_NORMALIZE, dialog._MODE_ANNOTATE],
+                )
+
+                self.assertTrue(dialog._is_output_to_dir())
+                self.assertFalse(dialog._output_row.isHidden())
+                self.assertFalse(dialog._overwrite_checkbox.isHidden())
+                self.assertTrue(dialog._output_to_dir_button.isChecked())
+                self.assertTrue(dialog._output_to_dir_button.property("selected"))
+                self.assertFalse(dialog._overwrite_source_button.isChecked())
+                self.assertFalse(dialog._overwrite_source_button.property("selected"))
+
+                dialog._set_output_mode(dialog._OUTPUT_IN_PLACE)
+
+                self.assertFalse(dialog._is_output_to_dir())
+                self.assertTrue(dialog._output_row.isHidden())
+                self.assertTrue(dialog._overwrite_checkbox.isHidden())
+                self.assertFalse(dialog._output_to_dir_button.isChecked())
+                self.assertFalse(dialog._output_to_dir_button.property("selected"))
+                self.assertTrue(dialog._overwrite_source_button.isChecked())
+                self.assertTrue(dialog._overwrite_source_button.property("selected"))
+
+                dialog._set_output_mode(dialog._OUTPUT_TO_DIR)
+
+                self.assertTrue(dialog._is_output_to_dir())
+                self.assertFalse(dialog._output_row.isHidden())
+                self.assertFalse(dialog._overwrite_checkbox.isHidden())
+                self.assertTrue(dialog._output_to_dir_button.property("selected"))
+                self.assertFalse(dialog._overwrite_source_button.property("selected"))
+                dialog.close()
+            finally:
+                config.BASE_DIR = old_base_dir
+
     def test_route_conversion_normalize_does_not_refresh_active_routes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             old_base_dir = config.BASE_DIR
@@ -256,6 +302,50 @@ class SettingsDialogMapTests(unittest.TestCase):
                 self.assertFalse(refresh_called["value"])
                 self.assertIn("完整日志：", dialog._log.toPlainText())
                 self.assertTrue(list(Path(tmp, "debug").glob("route_conversion_*.log")))
+                dialog.close()
+                parent.close()
+            finally:
+                config.BASE_DIR = old_base_dir
+
+    def test_route_conversion_normalize_in_place_uses_overwrite_flow_and_refreshes_routes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            old_base_dir = config.BASE_DIR
+            try:
+                config.BASE_DIR = tmp
+                input_dir = Path(tmp, "routes")
+                input_dir.mkdir()
+
+                refresh_called = {"value": False}
+                parent = QWidget()
+                parent.route_panel_controller = SimpleNamespace(
+                    reload_route_list=lambda: refresh_called.__setitem__("value", True)
+                )
+                dialog = RouteFormatConverterDialog(parent)
+                dialog._input_editor.setText(str(input_dir))
+                dialog._set_output_mode(dialog._OUTPUT_IN_PLACE)
+
+                report = SimpleNamespace(
+                    converted=1,
+                    skipped=0,
+                    ignored=0,
+                    errors=0,
+                    points_converted=2,
+                    messages=[f"[完成] {input_dir / 'a.json'}"],
+                )
+
+                with (
+                    patch("ui_island.dialogs.settings_dialog.styled_confirm", return_value=True) as confirm,
+                    patch("tools.route_format_converter.convert_old_big_map_routes_in_place", return_value=report) as convert_in_place,
+                    patch("tools.route_format_converter.convert_route_folder") as convert_to_dir,
+                    patch("ui_island.dialogs.settings_dialog.toast"),
+                ):
+                    dialog._start_conversion()
+
+                confirm.assert_called_once()
+                convert_in_place.assert_called_once_with(str(input_dir), recursive=True)
+                convert_to_dir.assert_not_called()
+                self.assertTrue(refresh_called["value"])
+                self.assertIn("完整日志：", dialog._log.toPlainText())
                 dialog.close()
                 parent.close()
             finally:

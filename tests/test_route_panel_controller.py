@@ -2,7 +2,7 @@ import os
 import tempfile
 import unittest
 from enum import Enum
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -11,7 +11,9 @@ from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import QApplication, QPushButton, QWidget
 
 from ui_island.controllers.route_panel_controller import RoutePanelController
+from ui_island.design import strings
 from ui_island.dialogs.route_notes_dialog import _NODE_ICON_SIZE
+from ui_island.services.route_manager import NODE_TYPE_COLLECT, NODE_TYPE_TELEPORT, NODE_TYPE_VIRTUAL
 from ui_island.state import RouteDrawingState
 
 
@@ -875,9 +877,45 @@ class RoutePanelFilterTests(unittest.TestCase):
         self.assertEqual(point["radius"], 30)
         self.assertEqual(point["sourceId"], "source-1")
         self.assertTrue(point["manual"])
-        self.assertEqual(point["node_type"], "teleport")
+        self.assertEqual(point["node_type"], "virtual")
         self.assertNotIn("visited", point)
         self.assertTrue(point["_drawing_new"])
+
+    def test_change_drawing_point_annotation_syncs_node_type_with_resolver(self) -> None:
+        window = _FakeWindow("")
+        window.route_drawing_state = RouteDrawingState()
+        window.route_drawing_state.begin(
+            route_id="2026010101",
+            category="routes",
+            name="route",
+            points=[{"x": 1, "y": 2, "node_type": "virtual"}],
+        )
+        window.route_mgr.annotation_type_items = lambda: [{"typeId": "ore", "type": "鐭跨煶"}]
+        controller = self._controller_for(window)
+        controller._sync_route_drawing_ui = lambda: None
+
+        with patch(
+            "ui_island.controllers.route_panel_controller.open_annotation_type_picker",
+            return_value={"typeId": "ore", "type": "鐭跨煶"},
+        ):
+            controller.change_drawing_point_annotation(0, node_type_resolver=lambda _type_id: "collect")
+
+        point = window.route_drawing_state.draft_points[0]
+        self.assertEqual(point["typeId"], "ore")
+        self.assertEqual(point["node_type"], "collect")
+
+    def test_append_drawing_point_node_type_override_wins_over_toolbar_state(self) -> None:
+        window = _FakeWindow("")
+        window.route_drawing_state = RouteDrawingState()
+        window.route_drawing_state.begin(route_id="2026010101", category="routes", name="route", points=[])
+        window.route_drawing_state.node_type = "collect"
+        controller = self._controller_for(window)
+        controller._sync_route_drawing_ui = lambda: None
+
+        controller.append_drawing_point(10, 20, node_type_override="teleport")
+
+        point = window.route_drawing_state.draft_points[-1]
+        self.assertEqual(point["node_type"], "teleport")
 
     def test_append_drawing_point_can_insert_after_nearest_node(self) -> None:
         window = _FakeWindow("")
@@ -1371,6 +1409,93 @@ class RoutePanelFilterTests(unittest.TestCase):
         self.assertTrue(info_mock.called)
         self.assertEqual(window.map_view.focus_calls, [])
         self.assertEqual(window.relocate_calls, [])
+
+    def test_current_position_add_menu_contains_new_node_actions(self) -> None:
+        window = _FakeWindow("")
+        window._last_player_xy = (12, 34)
+        window.map_interaction_controller = Mock()
+        controller = self._controller_for(window)
+        anchor = QPushButton()
+
+        with patch("ui_island.controllers.route_panel_controller.show_context_menu") as menu:
+            controller.show_current_position_add_menu("route-1", anchor)
+
+        menu.assert_called_once()
+        items = list(menu.call_args.args[2])
+        self.assertEqual(
+            [item.text for item in items],
+            [
+                strings.MAP_ADD_COLLECT_POINT_MENU_LABEL,
+                strings.MAP_ADD_TELEPORT_POINT_MENU_LABEL,
+                strings.MAP_ADD_GUIDE_POINT_MENU_LABEL,
+                strings.MAP_ADD_POINT_WITH_ANNOTATION_MENU_LABEL,
+            ],
+        )
+
+        items[0].callback()
+        window.map_interaction_controller.add_route_node_from_context_menu.assert_called_once_with(
+            12,
+            34,
+            NODE_TYPE_COLLECT,
+            route_ids=["route-1"],
+            show_dialog=False,
+        )
+        window.map_interaction_controller.reset_mock()
+
+        items[1].callback()
+        window.map_interaction_controller.add_route_node_from_context_menu.assert_called_once_with(
+            12,
+            34,
+            NODE_TYPE_TELEPORT,
+            route_ids=["route-1"],
+            show_dialog=False,
+        )
+        window.map_interaction_controller.reset_mock()
+
+        items[2].callback()
+        window.map_interaction_controller.add_route_node_from_context_menu.assert_called_once_with(
+            12,
+            34,
+            NODE_TYPE_VIRTUAL,
+            route_ids=["route-1"],
+            show_dialog=False,
+        )
+        window.map_interaction_controller.reset_mock()
+
+        items[3].callback()
+        window.map_interaction_controller.add_annotated_point_to_routes.assert_called_once_with(
+            12,
+            34,
+            route_ids=["route-1"],
+            show_dialog=False,
+        )
+
+    def test_current_position_add_menu_does_not_insert_until_action_is_selected(self) -> None:
+        window = _FakeWindow("")
+        window._last_player_xy = (12, 34)
+        window.map_interaction_controller = Mock()
+        controller = self._controller_for(window)
+
+        with patch("ui_island.controllers.route_panel_controller.show_context_menu"):
+            controller.show_current_position_add_menu("route-1", QPushButton())
+
+        window.map_interaction_controller.add_route_node_from_context_menu.assert_not_called()
+        window.map_interaction_controller.add_annotated_point_to_routes.assert_not_called()
+        window.map_interaction_controller.add_point_to_routes.assert_not_called()
+
+    def test_current_position_add_action_requires_valid_player_position(self) -> None:
+        window = _FakeWindow("")
+        window._last_player_xy = None
+        window.map_interaction_controller = Mock()
+        controller = self._controller_for(window)
+
+        with patch("ui_island.controllers.route_panel_controller.styled_info") as info:
+            controller.add_current_position_to_route("route-1", NODE_TYPE_COLLECT)
+
+        info.assert_called_once()
+        window.map_interaction_controller.add_route_node_from_context_menu.assert_not_called()
+        window.map_interaction_controller.add_annotated_point_to_routes.assert_not_called()
+        window.map_interaction_controller.add_point_to_routes.assert_not_called()
 
 
 if __name__ == "__main__":

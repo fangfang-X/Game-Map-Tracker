@@ -1,6 +1,9 @@
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
+import config
 from ui_island.controllers.map_interaction_controller import MapInteractionController
 from ui_island.state import RouteDrawingState
 
@@ -21,7 +24,7 @@ class _FakeRoutePanelController:
     def __init__(self, window=None) -> None:
         self.window = window
         self.refresh_count = 0
-        self.append_calls: list[tuple[int, int, dict | None]] = []
+        self.append_calls: list[tuple[int, int, dict | None, str | None]] = []
         self.change_order_calls: list[int] = []
         self.active_notes_route_id = ""
         self.notes_nodes: list[dict] | None = None
@@ -29,10 +32,16 @@ class _FakeRoutePanelController:
     def refresh_tracked_routes(self) -> None:
         self.refresh_count += 1
 
-    def append_drawing_point_from_context_menu(self, x: int, y: int, point_fields: dict | None = None) -> None:
+    def append_drawing_point_from_context_menu(
+        self,
+        x: int,
+        y: int,
+        point_fields: dict | None = None,
+        node_type_override: str | None = None,
+    ) -> None:
         drawing = getattr(self.window, "route_drawing_state", None)
         if drawing is not None and drawing.active and not drawing.paused:
-            self.append_calls.append((x, y, dict(point_fields or {})))
+            self.append_calls.append((x, y, dict(point_fields or {}), node_type_override))
 
     def change_drawing_point_order(self, point_index: int) -> None:
         self.change_order_calls.append(int(point_index))
@@ -70,12 +79,22 @@ class _FakeRoutePanelController:
         nodes.insert(max(0, min(len(nodes), int(to_index))), point)
         return self.update_route_notes_draft_nodes(route_id, nodes)
 
-    def set_route_notes_point_annotation(self, route_id: str, point_index: int, type_id: str, type_name: str) -> bool:
+    def set_route_notes_point_annotation(
+        self,
+        route_id: str,
+        point_index: int,
+        type_id: str,
+        type_name: str,
+        *,
+        node_type: str | None = None,
+    ) -> bool:
         nodes = self.route_notes_draft_nodes(route_id)
         if nodes is None or not (0 <= point_index < len(nodes)):
             return False
         nodes[point_index]["typeId"] = type_id
         nodes[point_index]["type"] = type_name
+        if node_type is not None:
+            nodes[point_index]["node_type"] = node_type
         return self.update_route_notes_draft_nodes(route_id, nodes)
 
 
@@ -92,7 +111,7 @@ class _FakeRouteManager:
         self.delete_outcomes = {"route-1": [0]}
         self.insert_outcomes = {"route-1": 1}
         self.visible_ids = ["route-1"]
-        self.annotation_items = [{"typeId": "flower", "type": "Sunflower"}]
+        self.annotation_items = [{"typeId": "flower", "type": "Sunflower"}, {"typeId": "tp", "type": "Teleport"}]
         self.annotation_points = {
             ("flower", 0): {
                 "x": 12,
@@ -104,6 +123,7 @@ class _FakeRouteManager:
             }
         }
         self.insert_calls: list[dict] = []
+        self.annotation_calls: list[tuple[str, int, str, str, str | None]] = []
         self.reorder_calls: list[tuple[str, int, int]] = []
         self.fail_reorder = False
 
@@ -140,9 +160,41 @@ class _FakeRouteManager:
     def annotation_type_items(self) -> list[dict]:
         return [dict(item) for item in self.annotation_items]
 
+    def annotation_type_ids(self) -> list[str]:
+        return [str(item.get("typeId") or "") for item in self.annotation_items]
+
+    def route_point_annotation_type_id(self, route_id: str, point_index: int) -> str:
+        route = self.routes.get(route_id)
+        points = route.get("points", []) if route is not None else []
+        if not (0 <= point_index < len(points)):
+            return ""
+        point = points[point_index]
+        return str(point.get("typeId") or "") if isinstance(point, dict) else ""
+
     def annotation_point(self, type_id: str, point_index: int) -> dict | None:
         point = self.annotation_points.get((type_id, point_index))
         return dict(point) if point is not None else None
+
+    def set_point_annotation(
+        self,
+        route_id: str,
+        point_index: int,
+        type_id: str,
+        type_name: str,
+        *,
+        node_type: str | None = None,
+    ) -> bool:
+        route = self.routes.get(route_id)
+        points = route.get("points", []) if route is not None else []
+        if not (0 <= point_index < len(points)):
+            return False
+        point = points[point_index]
+        point["typeId"] = type_id
+        point["type"] = type_name
+        if node_type is not None:
+            point["node_type"] = node_type
+        self.annotation_calls.append((route_id, point_index, type_id, type_name, node_type))
+        return True
 
     def suggest_insertion_index(self, _route_id: str, _x: int, _y: int) -> int:
         return 1
@@ -193,6 +245,34 @@ class MapInteractionControllerTests(unittest.TestCase):
         window = _FakeWindow()
         return MapInteractionController(window), window
 
+    def _annotation_file(self, root: Path) -> Path:
+        path = root / "annotations" / "points.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            """
+{
+  "types": [
+    {"typeId": "flower", "type": "Sunflower"},
+    {"typeId": "ore", "type": "Ore"},
+    {"typeId": "tp", "type": "Teleport"}
+  ],
+  "pointsByType": {
+    "flower": [{"x": 12, "y": 34, "label": "Flower"}],
+    "ore": [{"x": 13, "y": 34, "label": "Ore"}],
+    "tp": [{"x": 20, "y": 30, "label": "Portal"}]
+  }
+}
+""",
+            encoding="utf-8",
+        )
+        return path
+
+    def _teleport_dir(self, root: Path) -> Path:
+        path = root / "tools" / "points_get" / "teleport"
+        path.mkdir(parents=True)
+        (path / "Teleport.json").write_text("{}", encoding="utf-8")
+        return path
+
     def test_move_route_point_preview_updates_memory_without_persisting(self) -> None:
         controller, window = self._controller()
 
@@ -232,8 +312,334 @@ class MapInteractionControllerTests(unittest.TestCase):
         add_point_to_routes.assert_called_once_with(
             12,
             34,
-            point_fields={"typeId": "flower", "type": "Sunflower"},
+            point_fields={"typeId": "flower", "type": "Sunflower", "node_type": "collect"},
         )
+
+    def test_add_annotated_point_marks_teleport_type_as_teleport_node(self) -> None:
+        controller, window = self._controller()
+
+        with (
+            patch("tools.route_format_converter.default_route_teleport_type_ids", return_value=["tp"]),
+            patch(
+                "ui_island.controllers.map_interaction_controller.open_annotation_type_picker",
+                return_value={"typeId": "tp", "type": "Teleport"},
+            ),
+            patch.object(controller, "add_point_to_routes") as add_point_to_routes,
+        ):
+            controller.add_annotated_point_to_routes(12, 34)
+
+        add_point_to_routes.assert_called_once_with(
+            12,
+            34,
+            point_fields={"typeId": "tp", "type": "Teleport", "node_type": "teleport"},
+        )
+
+    def test_add_annotated_point_can_target_single_route_without_route_dialog(self) -> None:
+        controller, window = self._controller()
+
+        with (
+            patch(
+                "ui_island.controllers.map_interaction_controller.open_annotation_type_picker",
+                return_value={"typeId": "flower", "type": "Sunflower"},
+            ),
+            patch.object(controller, "add_point_to_routes") as add_point_to_routes,
+        ):
+            controller.add_annotated_point_to_routes(
+                12,
+                34,
+                route_ids=["route-1"],
+                show_dialog=False,
+            )
+
+        add_point_to_routes.assert_called_once_with(
+            12,
+            34,
+            route_ids=["route-1"],
+            show_dialog=False,
+            point_fields={"typeId": "flower", "type": "Sunflower", "node_type": "collect"},
+        )
+
+    def test_add_collect_route_node_matches_non_teleport_annotation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            old_base_dir = config.BASE_DIR
+            old_annotation_file = getattr(config, "ANNOTATION_FILE", "")
+            try:
+                root = Path(tmp)
+                config.BASE_DIR = str(root)
+                config.ANNOTATION_FILE = "annotations/points.json"
+                self._annotation_file(root)
+                self._teleport_dir(root)
+                controller, window = self._controller()
+                window.route_mgr.annotation_items = [
+                    {"typeId": "flower", "type": "Sunflower"},
+                    {"typeId": "tp", "type": "Teleport"},
+                ]
+
+                with (
+                    patch("ui_island.controllers.map_interaction_controller.open_annotation_match_candidate_picker") as picker,
+                    patch(
+                        "ui_island.controllers.map_interaction_controller.open_insert_point_dialog",
+                        return_value=(["route-1"], {}),
+                    ),
+                    patch("ui_island.controllers.map_interaction_controller.toast"),
+                ):
+                    controller.add_route_node_from_context_menu(12, 34, "collect")
+
+                picker.assert_not_called()
+                self.assertEqual(window.route_mgr.insert_calls[-1]["point_fields"], {
+                    "node_type": "collect",
+                    "typeId": "flower",
+                    "type": "Sunflower",
+                })
+            finally:
+                config.BASE_DIR = old_base_dir
+                config.ANNOTATION_FILE = old_annotation_file
+
+    def test_add_collect_route_node_matches_when_annotation_display_is_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            old_base_dir = config.BASE_DIR
+            old_annotation_file = getattr(config, "ANNOTATION_FILE", "")
+            try:
+                root = Path(tmp)
+                config.BASE_DIR = str(root)
+                config.ANNOTATION_FILE = "annotations/points.json"
+                self._annotation_file(root)
+                self._teleport_dir(root)
+                controller, window = self._controller()
+                window.route_mgr.annotation_type_ids = lambda: []
+
+                with (
+                    patch(
+                        "ui_island.controllers.map_interaction_controller.open_insert_point_dialog",
+                        return_value=(["route-1"], {}),
+                    ),
+                    patch("ui_island.controllers.map_interaction_controller.toast"),
+                ):
+                    controller.add_route_node_from_context_menu(12, 34, "collect")
+
+                self.assertEqual(window.route_mgr.insert_calls[-1]["point_fields"], {
+                    "node_type": "collect",
+                    "typeId": "flower",
+                    "type": "Sunflower",
+                })
+            finally:
+                config.BASE_DIR = old_base_dir
+                config.ANNOTATION_FILE = old_annotation_file
+
+    def test_add_teleport_route_node_matches_only_teleport_annotation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            old_base_dir = config.BASE_DIR
+            old_annotation_file = getattr(config, "ANNOTATION_FILE", "")
+            try:
+                root = Path(tmp)
+                config.BASE_DIR = str(root)
+                config.ANNOTATION_FILE = "annotations/points.json"
+                self._annotation_file(root)
+                self._teleport_dir(root)
+                controller, window = self._controller()
+
+                with patch(
+                    "ui_island.controllers.map_interaction_controller.open_insert_point_dialog",
+                    return_value=(["route-1"], {}),
+                ), patch("ui_island.controllers.map_interaction_controller.toast"):
+                    controller.add_route_node_from_context_menu(20, 30, "teleport")
+
+                self.assertEqual(window.route_mgr.insert_calls[-1]["point_fields"], {
+                    "node_type": "teleport",
+                    "typeId": "tp",
+                    "type": "Teleport",
+                })
+            finally:
+                config.BASE_DIR = old_base_dir
+                config.ANNOTATION_FILE = old_annotation_file
+
+    def test_add_teleport_route_node_matches_when_annotation_display_is_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            old_base_dir = config.BASE_DIR
+            old_annotation_file = getattr(config, "ANNOTATION_FILE", "")
+            try:
+                root = Path(tmp)
+                config.BASE_DIR = str(root)
+                config.ANNOTATION_FILE = "annotations/points.json"
+                self._annotation_file(root)
+                self._teleport_dir(root)
+                controller, window = self._controller()
+                window.route_mgr.annotation_type_ids = lambda: []
+
+                with patch(
+                    "ui_island.controllers.map_interaction_controller.open_insert_point_dialog",
+                    return_value=(["route-1"], {}),
+                ), patch("ui_island.controllers.map_interaction_controller.toast"):
+                    controller.add_route_node_from_context_menu(20, 30, "teleport")
+
+                self.assertEqual(window.route_mgr.insert_calls[-1]["point_fields"], {
+                    "node_type": "teleport",
+                    "typeId": "tp",
+                    "type": "Teleport",
+                })
+            finally:
+                config.BASE_DIR = old_base_dir
+                config.ANNOTATION_FILE = old_annotation_file
+
+    def test_add_guide_route_node_only_sets_virtual_node_type(self) -> None:
+        controller, window = self._controller()
+
+        with (
+            patch("ui_island.controllers.map_interaction_controller.open_annotation_type_picker") as picker,
+            patch(
+                "ui_island.controllers.map_interaction_controller.open_insert_point_dialog",
+                return_value=(["route-1"], {}),
+            ),
+            patch("ui_island.controllers.map_interaction_controller.toast"),
+        ):
+            controller.add_route_node_from_context_menu(12, 34, "virtual")
+
+        picker.assert_not_called()
+        self.assertEqual(window.route_mgr.insert_calls[-1]["point_fields"], {"node_type": "virtual"})
+
+    def test_add_route_node_can_target_single_route_without_route_dialog(self) -> None:
+        controller, window = self._controller()
+
+        with (
+            patch("ui_island.controllers.map_interaction_controller.open_annotation_type_picker") as picker,
+            patch(
+                "ui_island.controllers.map_interaction_controller.open_insert_point_dialog",
+            ) as insert_dialog,
+            patch("ui_island.controllers.map_interaction_controller.toast"),
+        ):
+            controller.add_route_node_from_context_menu(
+                12,
+                34,
+                "virtual",
+                route_ids=["route-1"],
+                show_dialog=False,
+            )
+
+        picker.assert_not_called()
+        insert_dialog.assert_not_called()
+        self.assertEqual(window.route_mgr.insert_calls[-1]["route_ids"], ["route-1"])
+        self.assertEqual(window.route_mgr.insert_calls[-1]["point_fields"], {"node_type": "virtual"})
+
+    def test_add_route_node_while_drawing_passes_node_type_override_to_draft(self) -> None:
+        controller, window = self._controller()
+        window.route_drawing_state.begin(route_id="route-1", category="routes", name="Route 1", points=[])
+
+        with (
+            patch("ui_island.controllers.map_interaction_controller.open_annotation_type_picker") as picker,
+            patch.object(controller, "add_point_to_routes") as add_point_to_routes,
+        ):
+            controller.add_route_node_from_context_menu(12, 34, "virtual")
+
+        picker.assert_not_called()
+        add_point_to_routes.assert_not_called()
+        self.assertEqual(window.route_panel_controller.append_calls, [
+            (12, 34, {"node_type": "virtual"}, "virtual")
+        ])
+
+    def test_add_route_node_without_match_uses_filtered_manual_picker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            old_base_dir = config.BASE_DIR
+            old_annotation_file = getattr(config, "ANNOTATION_FILE", "")
+            try:
+                root = Path(tmp)
+                config.BASE_DIR = str(root)
+                config.ANNOTATION_FILE = "annotations/points.json"
+                self._annotation_file(root)
+                self._teleport_dir(root)
+                controller, window = self._controller()
+                window.route_mgr.annotation_items = [
+                    {"typeId": "flower", "type": "Sunflower"},
+                    {"typeId": "tp", "type": "Teleport"},
+                ]
+
+                with patch(
+                    "ui_island.controllers.map_interaction_controller.open_annotation_type_picker",
+                    return_value={"typeId": "flower", "type": "Sunflower"},
+                ) as picker, patch(
+                    "ui_island.controllers.map_interaction_controller.open_insert_point_dialog",
+                    return_value=(["route-1"], {}),
+                ), patch("ui_island.controllers.map_interaction_controller.toast"):
+                    controller.add_route_node_from_context_menu(200, 200, "collect")
+
+                args = picker.call_args.args
+                self.assertEqual([item["typeId"] for item in args[1]], ["flower"])
+                self.assertEqual(window.route_mgr.insert_calls[-1]["point_fields"], {
+                    "node_type": "collect",
+                    "typeId": "flower",
+                    "type": "Sunflower",
+                })
+            finally:
+                config.BASE_DIR = old_base_dir
+                config.ANNOTATION_FILE = old_annotation_file
+
+    def test_add_route_node_without_match_uses_all_types_for_manual_picker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            old_base_dir = config.BASE_DIR
+            old_annotation_file = getattr(config, "ANNOTATION_FILE", "")
+            try:
+                root = Path(tmp)
+                config.BASE_DIR = str(root)
+                config.ANNOTATION_FILE = "annotations/points.json"
+                self._annotation_file(root)
+                self._teleport_dir(root)
+                controller, window = self._controller()
+                window.route_mgr.annotation_type_ids = lambda: []
+                window.route_mgr.annotation_items = [
+                    {"typeId": "flower", "type": "Sunflower"},
+                    {"typeId": "ore", "type": "Ore"},
+                    {"typeId": "tp", "type": "Teleport"},
+                ]
+
+                with patch(
+                    "ui_island.controllers.map_interaction_controller.open_annotation_type_picker",
+                    return_value=None,
+                ) as picker:
+                    controller.add_route_node_from_context_menu(200, 200, "collect")
+
+                args = picker.call_args.args
+                self.assertEqual([item["typeId"] for item in args[1]], ["flower", "ore"])
+            finally:
+                config.BASE_DIR = old_base_dir
+                config.ANNOTATION_FILE = old_annotation_file
+
+    def test_add_route_node_ambiguous_match_uses_candidate_picker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            old_base_dir = config.BASE_DIR
+            old_annotation_file = getattr(config, "ANNOTATION_FILE", "")
+            try:
+                root = Path(tmp)
+                config.BASE_DIR = str(root)
+                config.ANNOTATION_FILE = "annotations/points.json"
+                self._annotation_file(root)
+                self._teleport_dir(root)
+                controller, window = self._controller()
+                window.route_mgr.annotation_items = [
+                    {"typeId": "flower", "type": "Sunflower"},
+                    {"typeId": "ore", "type": "Ore"},
+                    {"typeId": "tp", "type": "Teleport"},
+                ]
+
+                def choose_candidate(_parent, candidates, **_kwargs):
+                    return candidates[1]
+
+                with patch(
+                    "ui_island.controllers.map_interaction_controller.open_annotation_match_candidate_picker",
+                    side_effect=choose_candidate,
+                ) as picker, patch(
+                    "ui_island.controllers.map_interaction_controller.open_insert_point_dialog",
+                    return_value=(["route-1"], {}),
+                ), patch("ui_island.controllers.map_interaction_controller.toast"):
+                    controller.add_route_node_from_context_menu(12, 34, "collect")
+
+                picker.assert_called_once()
+                self.assertEqual(window.route_mgr.insert_calls[-1]["point_fields"], {
+                    "node_type": "collect",
+                    "typeId": "ore",
+                    "type": "Ore",
+                })
+            finally:
+                config.BASE_DIR = old_base_dir
+                config.ANNOTATION_FILE = old_annotation_file
 
     def test_add_annotated_point_cancel_does_not_insert(self) -> None:
         controller, window = self._controller()
@@ -280,11 +686,13 @@ class MapInteractionControllerTests(unittest.TestCase):
 
         add_point_to_routes.assert_not_called()
         self.assertEqual(len(window.route_panel_controller.append_calls), 1)
-        x, y, point_fields = window.route_panel_controller.append_calls[0]
+        x, y, point_fields, node_type_override = window.route_panel_controller.append_calls[0]
         self.assertEqual((x, y), (12, 34))
         self.assertEqual(point_fields["typeId"], "flower")
         self.assertEqual(point_fields["type"], "Sunflower")
         self.assertEqual(point_fields["label"], "Field Flower")
+        self.assertEqual(point_fields["node_type"], "collect")
+        self.assertEqual(node_type_override, "collect")
 
     def test_add_annotation_to_route_does_not_write_json_when_pure_drawing_paused(self) -> None:
         controller, window = self._controller()
@@ -308,6 +716,41 @@ class MapInteractionControllerTests(unittest.TestCase):
         args, kwargs = add_point_to_routes.call_args
         self.assertEqual(args, (12, 34))
         self.assertEqual(kwargs["point_fields"]["typeId"], "flower")
+        self.assertEqual(kwargs["point_fields"]["node_type"], "collect")
+
+    def test_change_saved_point_annotation_syncs_node_type(self) -> None:
+        controller, window = self._controller()
+        window.route_mgr.routes["route-1"]["points"][0]["node_type"] = "virtual"
+
+        with (
+            patch("tools.route_format_converter.default_route_teleport_type_ids", return_value=["tp"]),
+            patch(
+                "ui_island.controllers.map_interaction_controller.open_annotation_type_picker",
+                return_value={"typeId": "tp", "type": "Teleport"},
+            ),
+            patch("ui_island.controllers.map_interaction_controller.toast"),
+        ):
+            controller.change_point_annotation("route-1", 0)
+
+        self.assertEqual(window.route_mgr.annotation_calls[-1], ("route-1", 0, "tp", "Teleport", "teleport"))
+        self.assertEqual(window.route_mgr.routes["route-1"]["points"][0]["node_type"], "teleport")
+
+    def test_change_notes_draft_point_annotation_syncs_node_type(self) -> None:
+        controller, window = self._controller()
+        window.route_panel_controller.active_notes_route_id = "route-1"
+        window.route_panel_controller.notes_nodes = [{"x": 1, "y": 2, "node_type": "virtual"}]
+
+        with (
+            patch(
+                "ui_island.controllers.map_interaction_controller.open_annotation_type_picker",
+                return_value={"typeId": "flower", "type": "Sunflower"},
+            ),
+            patch("ui_island.controllers.map_interaction_controller.toast"),
+        ):
+            controller.change_point_annotation("route-1", 0)
+
+        self.assertEqual(window.route_panel_controller.notes_nodes[0]["typeId"], "flower")
+        self.assertEqual(window.route_panel_controller.notes_nodes[0]["node_type"], "collect")
 
     def test_finish_move_route_point_persists_and_records_single_undo(self) -> None:
         controller, window = self._controller()

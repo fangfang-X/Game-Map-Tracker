@@ -245,6 +245,7 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
         self._startup_update_progress_changed.connect(self._on_startup_update_progress_changed, Qt.QueuedConnection)
         self._frame_ready.connect(self._on_frame)
         self.map_view.add_point_requested.connect(self.map_interaction_controller.on_add_point_requested)
+        self.map_view.add_route_node_requested.connect(self.map_interaction_controller.add_route_node_from_context_menu)
         self.map_view.add_annotation_requested.connect(self.map_interaction_controller.add_annotation_point)
         self.map_view.add_annotated_point_requested.connect(self.map_interaction_controller.add_annotated_point_to_routes)
         self.map_view.delete_point_requested.connect(self.map_interaction_controller.on_delete_point_requested)
@@ -361,7 +362,7 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
             self,
             "资源兼容提醒",
             "\n".join(f"- {message}" for message in messages)
-            + "\n\n这些问题不会阻止程序继续运行，但路线或标注可能偏移。",
+            + "\n\n路线或标注可能偏移,请前往设置窗口进行路线转换",
         )
 
     def _show_missing_map_notice(self) -> None:

@@ -5,7 +5,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QDialog, QPushButton, QWidget
 
-from ui_island.dialogs.annotation_type_picker import AnnotationTypePickerDialog
+from ui_island.dialogs.annotation_type_picker import (
+    AnnotationMatchCandidatePickerDialog,
+    AnnotationTypeMultiSelectDialog,
+    AnnotationTypePickerDialog,
+)
+from ui_island.services.annotation_matcher import AnnotationMatchCandidate
 from ui_island.widgets.annotation_type_widgets import AnnotationGroupSection
 
 
@@ -80,6 +85,50 @@ class AnnotationTypePickerTests(unittest.TestCase):
         dialog = AnnotationTypePickerDialog(None, [], "")
 
         self.assertEqual(self._sections(dialog), [])
+
+    def test_multi_picker_group_header_selects_and_inverts_current_group(self) -> None:
+        dialog = AnnotationTypeMultiSelectDialog(None, self._items(), ["a-1", "b-1"])
+        sections = self._sections(dialog)
+        group_a = sections[0]
+
+        self.assertIsNotNone(group_a.select_all_btn)
+        self.assertIsNotNone(group_a.invert_select_btn)
+
+        group_a.select_all_btn.click()
+
+        self.assertEqual(dialog._selected_type_ids, {"a-1", "a-2", "a-3", "b-1"})
+        self.assertTrue(dialog._buttons_by_type_id["a-2"].isChecked())
+        self.assertTrue(dialog._buttons_by_type_id["a-2"].property("selected"))
+        self.assertTrue(dialog._buttons_by_type_id["a-3"].isChecked())
+        self.assertTrue(dialog._buttons_by_type_id["b-1"].isChecked())
+
+        group_a.invert_select_btn.click()
+
+        self.assertEqual(dialog._selected_type_ids, {"b-1"})
+        self.assertFalse(dialog._buttons_by_type_id["a-1"].isChecked())
+        self.assertFalse(dialog._buttons_by_type_id["a-1"].property("selected"))
+        self.assertFalse(dialog._buttons_by_type_id["a-2"].isChecked())
+        self.assertFalse(dialog._buttons_by_type_id["a-3"].isChecked())
+        self.assertTrue(dialog._buttons_by_type_id["b-1"].isChecked())
+
+    def test_match_candidate_picker_returns_clicked_candidate(self) -> None:
+        candidate = AnnotationMatchCandidate(
+            type_id="a-1",
+            type_name="Alpha",
+            point_index=0,
+            x=10,
+            y=20,
+            distance=3.5,
+            label="A point",
+        )
+        dialog = AnnotationMatchCandidatePickerDialog(None, [candidate])
+        buttons = [button for button in dialog.findChildren(QPushButton) if button.objectName() == "AnnotationTypeRow"]
+
+        self.assertEqual(len(buttons), 1)
+        buttons[0].click()
+
+        self.assertEqual(dialog.selected_candidate(), candidate)
+        self.assertEqual(dialog.result(), QDialog.Accepted)
 
 
 if __name__ == "__main__":

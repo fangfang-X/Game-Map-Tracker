@@ -37,9 +37,11 @@ from PySide6.QtWidgets import (
 import config
 
 from . import StyledConfirm, StyledDialogBase, StyledMessage, Toast, center_dialog, place_left_of, toast, toast_persistent
+from .annotation_type_picker import open_annotation_type_multi_picker
 from .color_picker import open_styled_color_picker
 from ..app.app_info import APP_VERSION
 from ..design import qss, strings, tokens
+from ..services.annotation_preferences import normalize_type_ids
 from ..services.app_updater import (
     AppUpdateCheckResult,
     AppUpdateInstallResult,
@@ -160,7 +162,9 @@ def format_update_progress_message(downloaded: int, total: int, path: str = "") 
 
 class RouteFormatConverterDialog(StyledDialogBase):
     _MODE_NORMALIZE = "normalize"
-    _MODE_OLD_TO_17173 = "old_to_17173"
+    _MODE_ANNOTATE = "annotate"
+    _OUTPUT_TO_DIR = "output_to_dir"
+    _OUTPUT_IN_PLACE = "in_place"
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent, "路线转换", min_width=680, max_width=860)
@@ -170,6 +174,16 @@ class RouteFormatConverterDialog(StyledDialogBase):
         self._output_editor: QLineEdit | None = None
         self._recursive_checkbox: QCheckBox | None = None
         self._overwrite_checkbox: QCheckBox | None = None
+        self._output_to_dir_button: QPushButton | None = None
+        self._overwrite_source_button: QPushButton | None = None
+        self._output_mode = self._OUTPUT_TO_DIR
+        self._annotation_options: QWidget | None = None
+        self._match_types_button: QPushButton | None = None
+        self._teleport_types_button: QPushButton | None = None
+        self._match_radius_spin: QSpinBox | None = None
+        self._annotation_type_items: list[dict] = []
+        self._match_type_ids: list[str] = []
+        self._teleport_type_ids: list[str] = []
         self._log: QPlainTextEdit | None = None
         self._build_ui()
         self.resize(760, 520)
@@ -188,8 +202,8 @@ class RouteFormatConverterDialog(StyledDialogBase):
         mode_label.setObjectName("FieldLabel")
         mode_layout.addWidget(mode_label)
         mode_combo = QComboBox(self)
-        mode_combo.addItem("旧路线转新格式（输出到新目录）", self._MODE_NORMALIZE)
-        mode_combo.addItem("旧路线转新格式（覆盖源文件）", self._MODE_OLD_TO_17173)
+        mode_combo.addItem("旧路线转新格式", self._MODE_NORMALIZE)
+        mode_combo.addItem("为路线自动添加标注", self._MODE_ANNOTATE)
         mode_combo.currentIndexChanged.connect(self._sync_mode_ui)
         self._mode_combo = mode_combo
         mode_layout.addWidget(mode_combo, stretch=1)
@@ -217,8 +231,18 @@ class RouteFormatConverterDialog(StyledDialogBase):
         overwrite_checkbox.setChecked(False)
         self._overwrite_checkbox = overwrite_checkbox
         option_layout.addWidget(overwrite_checkbox)
+
+        output_to_dir_button = self._build_output_mode_button("输出到新目录", self._OUTPUT_TO_DIR)
+        self._output_to_dir_button = output_to_dir_button
+        option_layout.addWidget(output_to_dir_button)
+
+        overwrite_source_button = self._build_output_mode_button("覆盖源文件", self._OUTPUT_IN_PLACE)
+        self._overwrite_source_button = overwrite_source_button
+        option_layout.addWidget(overwrite_source_button)
         option_layout.addStretch()
         layout.addWidget(option_row)
+
+        self._annotation_options = self._build_annotation_options(layout)
 
         start_btn = QPushButton("开始转换")
         start_btn.setFixedHeight(32)
@@ -234,6 +258,60 @@ class RouteFormatConverterDialog(StyledDialogBase):
         self.shell_layout.addWidget(content, stretch=1)
         self.add_action_row(confirm_text="关闭", cancel_text="")
         self._sync_mode_ui()
+
+    def _build_output_mode_button(self, text: str, mode: str) -> QPushButton:
+        button = QPushButton(text)
+        button.setObjectName("SettingsTabButton")
+        button.setCheckable(True)
+        button.setMinimumHeight(24)
+        button.clicked.connect(lambda _checked=False, value=mode: self._set_output_mode(value))
+        return button
+
+    def _build_annotation_options(self, layout: QVBoxLayout) -> QWidget:
+        panel = QWidget(self)
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(0, 0, 0, 0)
+        panel_layout.setSpacing(8)
+
+        type_row = QWidget(panel)
+        type_layout = QHBoxLayout(type_row)
+        type_layout.setContentsMargins(0, 0, 0, 0)
+        type_layout.setSpacing(8)
+
+        match_button = QPushButton("匹配标注类型：未加载")
+        match_button.setMinimumHeight(30)
+        match_button.clicked.connect(self._choose_match_types)
+        self._match_types_button = match_button
+        type_layout.addWidget(match_button, stretch=1)
+
+        teleport_button = QPushButton("传送点类型：未加载")
+        teleport_button.setMinimumHeight(30)
+        teleport_button.clicked.connect(self._choose_teleport_types)
+        self._teleport_types_button = teleport_button
+        type_layout.addWidget(teleport_button, stretch=1)
+        panel_layout.addWidget(type_row)
+
+        radius_row = QWidget(panel)
+        radius_layout = QHBoxLayout(radius_row)
+        radius_layout.setContentsMargins(0, 0, 0, 0)
+        radius_layout.setSpacing(8)
+        radius_label = QLabel("最大匹配半径")
+        radius_label.setObjectName("FieldLabel")
+        radius_layout.addWidget(radius_label)
+        radius_spin = QSpinBox(panel)
+        radius_spin.setRange(1, 100)
+        radius_spin.setValue(12)
+        radius_spin.setSuffix(" px")
+        self._match_radius_spin = radius_spin
+        radius_layout.addWidget(radius_spin)
+        hint = QLabel("批量模式在半径内直接采用最近标注；可疑候选会写入日志。")
+        hint.setObjectName("StatLabel")
+        hint.setWordWrap(True)
+        radius_layout.addWidget(hint, stretch=1)
+        panel_layout.addWidget(radius_row)
+
+        layout.addWidget(panel)
+        return panel
 
     def _build_path_row(self, layout: QVBoxLayout, label_text: str, value: str, callback) -> QLineEdit:
         row = QWidget(self)
@@ -261,17 +339,116 @@ class RouteFormatConverterDialog(StyledDialogBase):
         return str(self._mode_combo.currentData() or self._MODE_NORMALIZE)
 
     def _sync_mode_ui(self) -> None:
-        old_to_17173 = self._current_mode() == self._MODE_OLD_TO_17173
+        mode = self._current_mode()
+        annotate = mode == self._MODE_ANNOTATE
+        output_to_dir = self._is_output_to_dir()
         if self._output_row is not None:
-            self._output_row.setVisible(not old_to_17173)
+            self._output_row.setVisible(output_to_dir)
         if self._overwrite_checkbox is not None:
-            self._overwrite_checkbox.setVisible(not old_to_17173)
+            self._overwrite_checkbox.setVisible(output_to_dir)
+        self._sync_output_mode_buttons()
+        if self._annotation_options is not None:
+            self._annotation_options.setVisible(annotate)
         if self._log is not None:
-            self._log.setPlaceholderText(
-                "此模式会转换坐标并补齐新格式字段，然后直接覆盖源路线文件，请先备份原路线文件。"
-                if old_to_17173
-                else "转换日志：会转换坐标并补齐 id、format_version、enable_versions"
+            if annotate:
+                placeholder = "转换日志：会按当前标注文件为路线节点自动补齐 type、typeId 和 node_type"
+            else:
+                placeholder = "转换日志：会转换坐标并补齐 id、format_version、enable_versions"
+            self._log.setPlaceholderText(placeholder)
+        if annotate:
+            self._ensure_annotation_type_defaults()
+
+    def _is_output_to_dir(self) -> bool:
+        return self._output_mode == self._OUTPUT_TO_DIR
+
+    def _set_output_mode(self, mode: str) -> None:
+        if mode not in {self._OUTPUT_TO_DIR, self._OUTPUT_IN_PLACE}:
+            mode = self._OUTPUT_TO_DIR
+        self._output_mode = mode
+        self._sync_mode_ui()
+
+    def _sync_output_mode_buttons(self) -> None:
+        for button, mode in (
+            (self._output_to_dir_button, self._OUTPUT_TO_DIR),
+            (self._overwrite_source_button, self._OUTPUT_IN_PLACE),
+        ):
+            if button is None:
+                continue
+            selected = self._output_mode == mode
+            button.setChecked(selected)
+            button.setProperty("selected", selected)
+            button.style().unpolish(button)
+            button.style().polish(button)
+
+    def _annotation_file_path(self) -> str:
+        return config.selected_annotation_path_from_settings()
+
+    def _ensure_annotation_type_defaults(self) -> None:
+        if self._annotation_type_items:
+            self._sync_annotation_type_buttons()
+            return
+        annotation_file = self._annotation_file_path()
+        if not annotation_file:
+            self._sync_annotation_type_buttons()
+            return
+        try:
+            from tools.route_format_converter import (
+                default_route_annotation_type_ids,
+                default_route_teleport_type_ids,
             )
+            from ui_island.services.annotation_matcher import load_annotation_type_items
+
+            self._annotation_type_items = load_annotation_type_items(annotation_file)
+            self._match_type_ids = default_route_annotation_type_ids(annotation_file)
+            self._teleport_type_ids = default_route_teleport_type_ids(annotation_file)
+        except Exception as exc:
+            self._annotation_type_items = []
+            self._match_type_ids = []
+            self._teleport_type_ids = []
+            if self._log is not None:
+                self._append_log(f"[警告] 加载标注类型失败：{exc}")
+        self._sync_annotation_type_buttons()
+
+    def _sync_annotation_type_buttons(self) -> None:
+        match_count = len(normalize_type_ids(self._match_type_ids))
+        teleport_count = len(normalize_type_ids(self._teleport_type_ids))
+        if self._match_types_button is not None:
+            self._match_types_button.setText(f"匹配标注类型：{match_count} 个")
+            self._match_types_button.setToolTip("选择参与路线节点自动匹配的标注类型")
+        if self._teleport_types_button is not None:
+            self._teleport_types_button.setText(f"传送点类型：{teleport_count} 个")
+            self._teleport_types_button.setToolTip("匹配到这些类型时，未设置节点类型的路线节点会写为传送点")
+
+    def _choose_match_types(self) -> None:
+        self._ensure_annotation_type_defaults()
+        selected = open_annotation_type_multi_picker(
+            self,
+            self._annotation_type_items,
+            self._match_type_ids,
+            title="选择参与匹配的标注类型",
+        )
+        if selected is None:
+            return
+        self._match_type_ids = normalize_type_ids(selected)
+        self._teleport_type_ids = [
+            type_id for type_id in normalize_type_ids(self._teleport_type_ids) if type_id in set(self._match_type_ids)
+        ]
+        self._sync_annotation_type_buttons()
+
+    def _choose_teleport_types(self) -> None:
+        self._ensure_annotation_type_defaults()
+        match_set = set(normalize_type_ids(self._match_type_ids))
+        items = [item for item in self._annotation_type_items if str(item.get("typeId") or "") in match_set]
+        selected = open_annotation_type_multi_picker(
+            self,
+            items,
+            self._teleport_type_ids,
+            title="选择传送点类型",
+        )
+        if selected is None:
+            return
+        self._teleport_type_ids = normalize_type_ids(selected)
+        self._sync_annotation_type_buttons()
 
     def _choose_input(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "选择输入目录", self._input_editor.text() if self._input_editor else "")
@@ -296,6 +473,21 @@ class RouteFormatConverterDialog(StyledDialogBase):
         self._append_log(f"已忽略：{report.ignored}")
         if report.points_converted:
             self._append_log(f"已转换点位：{report.points_converted}")
+        annotation_total = (
+            getattr(report, "annotation_matched", 0)
+            + getattr(report, "annotation_unmatched", 0)
+            + getattr(report, "annotation_existing_skipped", 0)
+            + getattr(report, "annotation_virtual_skipped", 0)
+            + getattr(report, "annotation_teleports", 0)
+            + getattr(report, "annotation_suspicious", 0)
+        )
+        if annotation_total:
+            self._append_log(f"标注匹配：{report.annotation_matched}")
+            self._append_log(f"未匹配默认采集点：{report.annotation_unmatched}")
+            self._append_log(f"跳过已有标注：{report.annotation_existing_skipped}")
+            self._append_log(f"跳过引路点：{report.annotation_virtual_skipped}")
+            self._append_log(f"传送点节点：{report.annotation_teleports}")
+            self._append_log(f"可疑候选：{report.annotation_suspicious}")
         self._append_log(f"错误数：{report.errors}")
         if log_path:
             self._append_log(f"完整日志：{log_path}")
@@ -322,6 +514,12 @@ class RouteFormatConverterDialog(StyledDialogBase):
             f"已跳过：{report.skipped}",
             f"已忽略：{report.ignored}",
             f"已转换点位：{report.points_converted}",
+            f"标注匹配：{getattr(report, 'annotation_matched', 0)}",
+            f"未匹配默认采集点：{getattr(report, 'annotation_unmatched', 0)}",
+            f"跳过已有标注：{getattr(report, 'annotation_existing_skipped', 0)}",
+            f"跳过引路点：{getattr(report, 'annotation_virtual_skipped', 0)}",
+            f"传送点节点：{getattr(report, 'annotation_teleports', 0)}",
+            f"可疑候选：{getattr(report, 'annotation_suspicious', 0)}",
             f"错误数：{report.errors}",
             "",
             "明细：",
@@ -351,6 +549,8 @@ class RouteFormatConverterDialog(StyledDialogBase):
 
     def _start_conversion(self) -> None:
         from tools.route_format_converter import (
+            RouteAnnotationOptions,
+            annotate_route_folder,
             convert_old_big_map_routes_in_place,
             convert_route_folder,
             validate_distinct_output_dir,
@@ -364,39 +564,77 @@ class RouteFormatConverterDialog(StyledDialogBase):
         if self._log is not None:
             self._log.clear()
         try:
-            if mode == self._MODE_OLD_TO_17173:
-                confirmed = styled_confirm(
-                    self,
-                    "覆盖转换路线",
-                    "此操作会把旧路线坐标转换为新路线坐标，补齐 id、format_version、enable_versions，并直接覆盖源路线文件。\n\n"
-                    "正式执行前请先备份原路线文件。确定继续吗？",
-                    confirm_text="已备份，开始转换",
-                    cancel_text="取消",
-                )
-                if not confirmed:
+            output_to_dir = self._is_output_to_dir()
+            output_dir = self._output_editor.text().strip() if self._output_editor is not None else ""
+            if output_to_dir and not output_dir:
+                styled_info(self, "路线转换", "请先选择输出目录。")
+                return
+
+            if mode == self._MODE_ANNOTATE:
+                self._ensure_annotation_type_defaults()
+                annotation_file = self._annotation_file_path()
+                if not annotation_file:
+                    styled_info(self, "路线转换", "请先在设置中选择标注文件。")
                     return
-                report = convert_old_big_map_routes_in_place(
-                    input_dir,
-                    recursive=self._recursive_checkbox.isChecked() if self._recursive_checkbox is not None else True,
-                )
-                refresh_dir = input_dir
-            else:
-                output_dir = self._output_editor.text().strip() if self._output_editor is not None else ""
-                if not output_dir:
-                    styled_info(self, "路线转换", "请先选择输出目录。")
+                if not self._match_type_ids:
+                    styled_info(self, "路线转换", "请先选择至少一个匹配标注类型。")
                     return
-                validate_distinct_output_dir(
-                    input_dir,
-                    output_dir,
-                    recursive=self._recursive_checkbox.isChecked() if self._recursive_checkbox is not None else True,
+                if not output_to_dir:
+                    confirmed = styled_confirm(
+                        self,
+                        "覆盖添加路线标注",
+                        "此操作会直接覆盖源路线文件，为未设置标注的节点补齐 type、typeId 和 node_type。\n\n"
+                        "正式执行前请先备份原路线文件。确定继续吗？",
+                        confirm_text="已备份，开始转换",
+                        cancel_text="取消",
+                    )
+                    if not confirmed:
+                        return
+                options = RouteAnnotationOptions(
+                    annotation_file=annotation_file,
+                    match_type_ids=tuple(normalize_type_ids(self._match_type_ids)),
+                    teleport_type_ids=tuple(normalize_type_ids(self._teleport_type_ids)),
+                    max_radius=float(self._match_radius_spin.value() if self._match_radius_spin is not None else 12),
                 )
-                report = convert_route_folder(
+                report = annotate_route_folder(
                     input_dir,
-                    output_dir,
+                    output_dir if output_to_dir else None,
+                    options,
                     recursive=self._recursive_checkbox.isChecked() if self._recursive_checkbox is not None else True,
                     overwrite=self._overwrite_checkbox.isChecked() if self._overwrite_checkbox is not None else False,
+                    in_place=not output_to_dir,
                 )
-                refresh_dir = output_dir
+                refresh_dir = output_dir if output_to_dir else input_dir
+            else:
+                if output_to_dir:
+                    validate_distinct_output_dir(
+                        input_dir,
+                        output_dir,
+                        recursive=self._recursive_checkbox.isChecked() if self._recursive_checkbox is not None else True,
+                    )
+                    report = convert_route_folder(
+                        input_dir,
+                        output_dir,
+                        recursive=self._recursive_checkbox.isChecked() if self._recursive_checkbox is not None else True,
+                        overwrite=self._overwrite_checkbox.isChecked() if self._overwrite_checkbox is not None else False,
+                    )
+                    refresh_dir = output_dir
+                else:
+                    confirmed = styled_confirm(
+                        self,
+                        "覆盖转换路线",
+                        "此操作会把旧路线坐标转换为新路线坐标，补齐 id、format_version、enable_versions，并直接覆盖源路线文件。\n\n"
+                        "正式执行前请先备份原路线文件。确定继续吗？",
+                        confirm_text="已备份，开始转换",
+                        cancel_text="取消",
+                    )
+                    if not confirmed:
+                        return
+                    report = convert_old_big_map_routes_in_place(
+                        input_dir,
+                        recursive=self._recursive_checkbox.isChecked() if self._recursive_checkbox is not None else True,
+                    )
+                    refresh_dir = input_dir
         except Exception as exc:
             self._show_conversion_error("路线转换失败", exc)
             return
@@ -411,7 +649,7 @@ class RouteFormatConverterDialog(StyledDialogBase):
             styled_info(self, "路线转换完成", "转换已结束，但存在错误，请查看日志。")
         else:
             toast(self, "路线转换完成")
-        if mode == self._MODE_OLD_TO_17173:
+        if (mode == self._MODE_ANNOTATE) or not self._is_output_to_dir():
             self._refresh_routes_if_needed(refresh_dir)
 
     def _refresh_routes_if_needed(self, output_dir: str) -> None:
