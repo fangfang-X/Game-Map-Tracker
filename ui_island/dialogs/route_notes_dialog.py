@@ -4,27 +4,41 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPlainTextEdit,
     QPushButton,
+    QGraphicsOpacityEffect,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
     QDialog,
 )
 
-from ui_island.services.route_manager import NODE_TYPE_COLLECT, NODE_TYPE_TELEPORT, NODE_TYPE_VIRTUAL, NODE_TYPES
+from ui_island.services.route_manager import (
+    NODE_TYPE_COLLECT,
+    NODE_TYPE_TELEPORT,
+    NODE_TYPE_VIRTUAL,
+    NODE_TYPES,
+    apply_route_node_auto_labels as apply_service_route_node_auto_labels,
+    is_auto_route_node_label as service_is_auto_route_node_label,
+    route_node_auto_label as service_route_node_auto_label,
+)
 
 from .base import StyledDialogBase, center_dialog
 from .color_picker import open_styled_color_picker
+from .annotation_type_picker import open_annotation_type_picker
 from ..design import strings
-from ..widgets.factory import make_scroll_area
+from ..widgets.context_menu import ContextMenuItem, show_context_menu
+from ..widgets.annotation_type_widgets import annotation_icon_path
+from ..widgets.factory import make_route_panel_line_edit, make_scroll_area
 
 _NODE_ICON_SIZE = 22
 _STAT_COLUMNS = 3
@@ -53,7 +67,12 @@ def route_color_to_hex(route_color: tuple[int, int, int]) -> str:
 
 def route_node_display_name(point: dict, index: int) -> str:
     label = str(point.get("label") or "").strip() if isinstance(point, dict) else ""
-    return label or f"节点 {index + 1}"
+    return label or route_node_auto_label(point, index)
+
+
+def route_node_display_names(points: list[dict]) -> list[str]:
+    labeled = apply_route_node_auto_labels(points)
+    return [route_node_display_name(point, index) for index, point in enumerate(labeled)]
 
 
 def normalize_route_node_type(point: dict) -> str:
@@ -69,6 +88,18 @@ def route_node_annotation(point: dict) -> tuple[str, str] | None:
     if not type_id and not type_name:
         return None
     return type_id or type_name, type_name or type_id
+
+
+def route_node_auto_label(point: dict, fallback_index: int, type_counts: dict[str, int] | None = None) -> str:
+    return service_route_node_auto_label(point, fallback_index, type_counts)
+
+
+def is_auto_route_node_label(value: object) -> bool:
+    return service_is_auto_route_node_label(value)
+
+
+def apply_route_node_auto_labels(points: list[dict]) -> list[dict]:
+    return apply_service_route_node_auto_labels(points, copy=True)
 
 
 def summarize_route_nodes(points: list[dict]) -> dict:
@@ -124,7 +155,545 @@ def route_node_icon_pixmap(point: dict, route_color_hex: str, size: int = _NODE_
     return pixmap, True
 
 
+def _persistable_route_node(point: dict) -> dict:
+    copied = dict(point)
+    copied.pop("icon_path", None)
+    return copied
+
+
+class RouteNodeStatsPanel(QWidget):
+    def __init__(self, parent=None, *, include_title: bool = True) -> None:
+        super().__init__(parent)
+        self._nodes: list[dict] = []
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(_NODE_PANEL_SPACING)
+
+        if include_title:
+            stats_title = QLabel(strings.ROUTE_NOTES_STATS_TITLE)
+            stats_title.setObjectName("FieldLabel")
+            stats_title.setFixedHeight(_TITLE_ROW_HEIGHT)
+            stats_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            layout.addWidget(stats_title)
+
+        self._stats_scroll = make_scroll_area(
+            object_name="RouteNotesStatsScroll",
+            horizontal_policy=Qt.ScrollBarAlwaysOff,
+            vertical_policy=Qt.ScrollBarAsNeeded,
+        )
+        layout.addWidget(self._stats_scroll)
+        self.set_nodes([])
+
+    def set_nodes(self, nodes: list[dict]) -> None:
+        self._nodes = [dict(point) for point in nodes if isinstance(point, dict)]
+        self._refresh_stats_section()
+
+    def _refresh_stats_section(self) -> None:
+        stats = QFrame(self)
+        stats.setObjectName("RouteNotesStatsPanel")
+        stats_layout = QGridLayout(stats)
+        stats_layout.setContentsMargins(8, 8, 8, 8)
+        stats_layout.setHorizontalSpacing(6)
+        stats_layout.setVerticalSpacing(6)
+        summary = summarize_route_nodes(self._nodes)
+        stat_items = [
+            (strings.ROUTE_NOTES_NODE_COLLECT, summary["node_counts"].get(NODE_TYPE_COLLECT, 0)),
+            (strings.ROUTE_NOTES_NODE_TELEPORT, summary["node_counts"].get(NODE_TYPE_TELEPORT, 0)),
+            (strings.ROUTE_NOTES_NODE_GUIDE, summary["node_counts"].get(NODE_TYPE_VIRTUAL, 0)),
+        ]
+        stat_items.extend((item["label"], item["count"]) for item in summary["annotations"])
+        for index, (label, count) in enumerate(stat_items):
+            chip = QLabel(f"{label} {count}")
+            chip.setObjectName("RouteNotesStatChip")
+            chip.setToolTip(f"{label}: {count}")
+            stats_layout.addWidget(chip, index // _STAT_COLUMNS, index % _STAT_COLUMNS)
+
+        scroll_height = max(_STATS_SCROLL_DEFAULT_HEIGHT, min(_STATS_SCROLL_MAX_HEIGHT, stats.sizeHint().height()))
+        self._stats_scroll.setMinimumHeight(scroll_height)
+        self._stats_scroll.setMaximumHeight(scroll_height)
+        self._stats_scroll.setWidget(stats)
+
+
+class RouteNodeEditorPanel(QWidget):
+    nodes_changed = Signal()
+    node_label_changed = Signal(int, object, object)
+    node_label_edit_committed = Signal(int, object, object)
+    node_annotation_changed = Signal(int, object, object)
+    node_order_changed = Signal(int, int)
+
+    def __init__(
+        self,
+        parent=None,
+        *,
+        route_color_hex: str = "#1ad1ff",
+        annotation_items_provider=None,
+        annotation_icon_path_provider=None,
+        include_stats: bool = True,
+        include_title: bool = True,
+        annotation_picker_placement: str = "center",
+        annotation_picker_anchor=None,
+    ) -> None:
+        super().__init__(parent)
+        self._route_color_hex = normalize_color_hex(route_color_hex) or "#1ad1ff"
+        self._annotation_items_provider = annotation_items_provider
+        self._annotation_icon_path_provider = annotation_icon_path_provider
+        self._annotation_picker_placement = str(annotation_picker_placement or "center")
+        self._annotation_picker_anchor = annotation_picker_anchor
+        self._nodes: list[dict] = []
+        self._node_rows: list[QWidget] = []
+        self._drag_candidate: dict | None = None
+        self._drag_preview: QWidget | None = None
+        self._drop_indicator: QFrame | None = None
+        self._drop_target_index: int | None = None
+        self._drag_row_effect: QGraphicsOpacityEffect | None = None
+        self._syncing = False
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(_NODE_PANEL_SPACING)
+        layout.setAlignment(Qt.AlignTop)
+
+        self._stats_panel = None
+        if include_stats:
+            self._stats_panel = RouteNodeStatsPanel(self)
+            layout.addWidget(self._stats_panel)
+
+        if include_title:
+            nodes_title = QLabel(strings.ROUTE_NOTES_NODE_LIST)
+            nodes_title.setObjectName("FieldLabel")
+            nodes_title.setFixedHeight(_TITLE_ROW_HEIGHT)
+            nodes_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            layout.addWidget(nodes_title)
+
+        self._nodes_scroll = make_scroll_area(
+            object_name="RouteNotesNodeScroll",
+            horizontal_policy=Qt.ScrollBarAlwaysOff,
+            min_height=_NODE_SCROLL_MIN_HEIGHT,
+            size_policy=(QSizePolicy.Expanding, QSizePolicy.Expanding),
+        )
+        layout.addWidget(self._nodes_scroll, stretch=1)
+        self._refresh_after_node_change(emit=False)
+
+    def set_annotation_items_provider(self, provider) -> None:
+        self._annotation_items_provider = provider
+
+    def set_annotation_icon_path_provider(self, provider) -> None:
+        self._annotation_icon_path_provider = provider
+
+    def set_annotation_picker_placement(self, placement: str = "center", anchor=None) -> None:
+        self._annotation_picker_placement = str(placement or "center")
+        self._annotation_picker_anchor = anchor
+
+    def set_route_color_hex(self, route_color_hex: str) -> None:
+        normalized = normalize_color_hex(route_color_hex) or "#1ad1ff"
+        if normalized == self._route_color_hex:
+            return
+        self._route_color_hex = normalized
+        self._refresh_node_rows()
+
+    def set_nodes(self, nodes: list[dict], refresh: bool = True) -> None:
+        self._syncing = True
+        try:
+            self._nodes = [self._node_with_icon_path(point) for point in nodes if isinstance(point, dict)]
+            self._cleanup_node_drag()
+            if refresh:
+                self._refresh_after_node_change(emit=False)
+        finally:
+            self._syncing = False
+
+    def nodes(self) -> list[dict]:
+        return apply_route_node_auto_labels([_persistable_route_node(point) for point in self._nodes])
+
+    def draft_nodes(self) -> list[dict]:
+        return [_persistable_route_node(point) for point in self._nodes]
+
+    def _node_with_icon_path(self, point: dict) -> dict:
+        copied = dict(point)
+        type_id = str(copied.get("typeId") or "").strip()
+        if not type_id or copied.get("icon_path") or not callable(self._annotation_icon_path_provider):
+            return copied
+        try:
+            icon_path = str(self._annotation_icon_path_provider(type_id) or "").strip()
+        except Exception:
+            icon_path = ""
+        if icon_path:
+            copied["icon_path"] = icon_path
+        return copied
+
+    def _emit_nodes_changed(self) -> None:
+        if not self._syncing:
+            self.nodes_changed.emit()
+
+    def _refresh_stats_section(self) -> None:
+        if self._stats_panel is not None:
+            self._stats_panel.set_nodes(self._nodes)
+
+    def _refresh_node_rows(self) -> None:
+        scroll_value = 0
+        if hasattr(self, "_nodes_scroll"):
+            scroll_value = self._nodes_scroll.verticalScrollBar().value()
+
+        host = QWidget()
+        host.setObjectName("AnnotationPanelInner")
+        host_layout = QVBoxLayout(host)
+        host_layout.setContentsMargins(2, 2, 2, 2)
+        host_layout.setSpacing(6)
+        self._node_rows = []
+        if not self._nodes:
+            empty = QLabel(strings.ROUTE_NOTES_NODE_EMPTY)
+            empty.setObjectName("DimLabel")
+            empty.setWordWrap(True)
+            host_layout.addWidget(empty)
+        else:
+            display_names = route_node_display_names(self._nodes)
+            for index, point in enumerate(self._nodes):
+                row = self._build_node_row(point, index, display_names[index])
+                self._node_rows.append(row)
+                host_layout.addWidget(row)
+        host_layout.addStretch(1)
+        self._nodes_scroll.setWidget(host)
+        self._nodes_scroll.verticalScrollBar().setValue(scroll_value)
+        self._drop_indicator = QFrame(host)
+        self._drop_indicator.setObjectName("RouteNotesDropIndicator")
+        self._drop_indicator.setFixedHeight(3)
+        self._drop_indicator.hide()
+
+    def _build_node_row(self, point: dict, index: int, display_name: str) -> QWidget:
+        row = QWidget()
+        row.setObjectName("RouteNotesNodeRow")
+        row.setProperty("routeNotesDragIndex", index)
+        row.installEventFilter(self)
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(6, 4, 6, 4)
+        row_layout.setSpacing(6)
+
+        icon_button = QPushButton(row)
+        icon_button.setObjectName("RouteNotesNodeIcon")
+        icon_button.setFixedSize(26, 26)
+        icon_button.setIconSize(QSize(_NODE_ICON_SIZE, _NODE_ICON_SIZE))
+        pixmap, fallback = route_node_icon_pixmap(point, self._route_color_hex)
+        icon_button.setIcon(QIcon(pixmap))
+        icon_button.setProperty("fallbackIcon", fallback)
+        icon_button.setProperty("routeNotesDragIndex", index)
+        icon_button.setToolTip(self._node_annotation_tooltip(point))
+        icon_button.clicked.connect(lambda _checked=False, known_index=index: self._change_node_annotation(known_index))
+        icon_button.installEventFilter(self)
+        row_layout.addWidget(icon_button)
+
+        name_input = make_route_panel_line_edit(
+            placeholder=display_name,
+            parent=row,
+            size_policy=(QSizePolicy.Ignored, QSizePolicy.Fixed),
+        )
+        name_input.setObjectName("RouteNotesNodeName")
+        name_input.setProperty("routeNotesDragIndex", index)
+        current_label = str(point.get("label") or "").strip()
+        name_input.setText(display_name if not current_label or is_auto_route_node_label(current_label) else current_label)
+        name_input.setToolTip(display_name)
+        name_input.setProperty("routeNotesLabelBefore", point.get("label", None))
+        name_input.setContextMenuPolicy(Qt.CustomContextMenu)
+        name_input.customContextMenuRequested.connect(
+            lambda pos, editor=name_input: self._show_name_context_menu(editor, pos)
+        )
+        name_input.textChanged.connect(lambda text, known_index=index: self._set_node_label(known_index, text))
+        name_input.editingFinished.connect(
+            lambda editor=name_input, known_index=index: self._commit_node_label(known_index, editor)
+        )
+        name_input.installEventFilter(self)
+        row_layout.addWidget(name_input, stretch=1)
+
+        order_input = QLineEdit(row)
+        order_input.setObjectName("RouteNotesNodeOrderInput")
+        order_input.setProperty("routePanelInput", "true")
+        order_input.setAlignment(Qt.AlignCenter)
+        order_input.setFixedSize(58, 26)
+        order_input.setText(f"{index + 1}/{len(self._nodes)}")
+        order_input.setToolTip(strings.CHANGE_POINT_ORDER_MENU_LABEL)
+        order_input.setProperty("routeNotesDragIndex", index)
+        order_input.setContextMenuPolicy(Qt.NoContextMenu)
+        order_input.installEventFilter(self)
+        order_input.editingFinished.connect(
+            lambda editor=order_input, known_index=index: self._apply_order_text(known_index, editor.text())
+        )
+        row_layout.addWidget(order_input)
+        return row
+
+    def _show_name_context_menu(self, editor: QLineEdit, pos) -> None:
+        has_selection = editor.hasSelectedText()
+        clipboard = QApplication.clipboard()
+        clipboard_text = clipboard.text() if clipboard is not None else ""
+        read_only = editor.isReadOnly()
+        show_context_menu(
+            editor,
+            editor.mapToGlobal(pos),
+            [
+                ContextMenuItem("撤销", editor.undo, enabled=not read_only and editor.isUndoAvailable()),
+                ContextMenuItem("重做", editor.redo, enabled=not read_only and editor.isRedoAvailable()),
+                ContextMenuItem.separator_item(),
+                ContextMenuItem("剪切", editor.cut, enabled=not read_only and has_selection),
+                ContextMenuItem("复制", editor.copy, enabled=has_selection),
+                ContextMenuItem("粘贴", editor.paste, enabled=not read_only and bool(clipboard_text)),
+                ContextMenuItem("删除", lambda: editor.del_(), enabled=not read_only and has_selection),
+                ContextMenuItem.separator_item(),
+                ContextMenuItem("全选", editor.selectAll, enabled=bool(editor.text())),
+            ],
+            object_name="RouteListContextMenu",
+        )
+
+    def _node_annotation_tooltip(self, point: dict) -> str:
+        annotation = route_node_annotation(point)
+        if annotation is None:
+            return strings.ANNOTATION_TYPE_PICKER_CLEAR
+        return annotation[1]
+
+    def _set_node_label(self, index: int, text: str) -> None:
+        if self._syncing or not (0 <= index < len(self._nodes)):
+            return
+        before = self._nodes[index].get("label", None)
+        label = str(text or "").strip()
+        if label:
+            self._nodes[index]["label"] = label
+        else:
+            self._nodes[index].pop("label", None)
+        after = self._nodes[index].get("label", None)
+        if before == after:
+            return
+        self.node_label_changed.emit(index, before, after)
+        self._emit_nodes_changed()
+
+    def _commit_node_label(self, index: int, editor: QLineEdit) -> None:
+        if not (0 <= index < len(self._nodes)):
+            return
+        before = editor.property("routeNotesLabelBefore")
+        after = self._nodes[index].get("label", None)
+        if before == after:
+            return
+        editor.setProperty("routeNotesLabelBefore", after)
+        self.node_label_edit_committed.emit(index, before, after)
+
+    def _apply_order_text(self, index: int, text: str) -> None:
+        if not (0 <= index < len(self._nodes)):
+            return
+        raw_target = str(text or "").split("/", 1)[0].strip()
+        try:
+            target = int(raw_target) - 1
+        except (TypeError, ValueError):
+            self._refresh_node_rows()
+            return
+        self._move_node(index, target)
+
+    def _move_node(self, from_index: int, to_index: int) -> bool:
+        if not (0 <= from_index < len(self._nodes)):
+            return False
+        target = max(0, min(len(self._nodes) - 1, int(to_index)))
+        if target == from_index:
+            self._refresh_node_rows()
+            return False
+        point = self._nodes.pop(from_index)
+        self._nodes.insert(target, point)
+        self._refresh_after_node_change()
+        self.node_order_changed.emit(from_index, target)
+        self._emit_nodes_changed()
+        return True
+
+    def _refresh_after_node_change(self, *, emit: bool = False) -> None:
+        self._refresh_stats_section()
+        self._refresh_node_rows()
+        if emit:
+            self._emit_nodes_changed()
+
+    def _annotation_items(self) -> list[dict]:
+        if callable(self._annotation_items_provider):
+            items = self._annotation_items_provider()
+            return [dict(item) for item in items or [] if isinstance(item, dict)]
+        parent = self.parent()
+        route_mgr = getattr(parent, "route_mgr", None)
+        if route_mgr is not None and hasattr(route_mgr, "annotation_type_items"):
+            return route_mgr.annotation_type_items()
+        return []
+
+    def _change_node_annotation(self, index: int) -> None:
+        if not (0 <= index < len(self._nodes)):
+            return
+        items = self._annotation_items()
+        current_type_id = str(self._nodes[index].get("typeId") or "")
+        selected = open_annotation_type_picker(
+            self,
+            items,
+            current_type_id,
+            include_clear=True,
+            placement=self._annotation_picker_placement,
+            anchor=self._annotation_picker_anchor or self,
+        )
+        if selected is None:
+            return
+        before = _persistable_route_node(self._nodes[index])
+        if selected.get("clear"):
+            self._nodes[index].pop("typeId", None)
+            self._nodes[index].pop("type", None)
+            self._nodes[index].pop("icon_path", None)
+            after = _persistable_route_node(self._nodes[index])
+            self._refresh_after_node_change()
+            self.node_annotation_changed.emit(index, before, after)
+            self._emit_nodes_changed()
+            return
+
+        type_id = str(selected.get("typeId") or "").strip()
+        if not type_id:
+            return
+        type_name = str(selected.get("type") or type_id).strip() or type_id
+        self._nodes[index]["typeId"] = type_id
+        self._nodes[index]["type"] = type_name
+        self._nodes[index]["icon_path"] = str(annotation_icon_path(selected, type_id))
+        after = _persistable_route_node(self._nodes[index])
+        self._refresh_after_node_change()
+        self.node_annotation_changed.emit(index, before, after)
+        self._emit_nodes_changed()
+
+    def eventFilter(self, source, event) -> bool:
+        index = source.property("routeNotesDragIndex") if hasattr(source, "property") else None
+        if index is None:
+            return super().eventFilter(source, event)
+        try:
+            index = int(index)
+        except (TypeError, ValueError):
+            return super().eventFilter(source, event)
+
+        if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.LeftButton:
+            self._drag_candidate = {
+                "index": index,
+                "start": event.globalPosition().toPoint(),
+                "active": False,
+                "source": source,
+            }
+            return False
+        if event.type() == QEvent.Type.MouseMove and self._drag_candidate is not None:
+            distance = (event.globalPosition().toPoint() - self._drag_candidate["start"]).manhattanLength()
+            if not self._drag_candidate.get("active") and distance >= QApplication.startDragDistance():
+                self._drag_candidate["active"] = True
+                self._begin_node_drag(int(self._drag_candidate["index"]), event.globalPosition().toPoint())
+            if self._drag_candidate.get("active"):
+                self._update_node_drag(event.globalPosition().toPoint())
+                return True
+            return False
+        if event.type() == QEvent.Type.MouseButtonRelease and self._drag_candidate is not None:
+            candidate = self._drag_candidate
+            self._drag_candidate = None
+            if candidate.get("active"):
+                self._finish_node_drag(int(candidate["index"]), event.globalPosition().toPoint())
+                return True
+            return False
+        return super().eventFilter(source, event)
+
+    def _begin_node_drag(self, index: int, global_pos) -> None:
+        if not (0 <= index < len(self._node_rows)):
+            return
+        row = self._node_rows[index]
+        row.grabMouse()
+        self._drag_row_effect = QGraphicsOpacityEffect(row)
+        self._drag_row_effect.setOpacity(0.32)
+        row.setGraphicsEffect(self._drag_row_effect)
+
+        preview = self._build_drag_preview(index)
+        preview.adjustSize()
+        self._drag_preview = preview
+        self._move_drag_preview(global_pos)
+        preview.show()
+        preview.raise_()
+        self._update_drop_indicator(global_pos)
+
+    def _build_drag_preview(self, index: int) -> QWidget:
+        point = self._nodes[index]
+        preview = QFrame(self, Qt.ToolTip | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
+        preview.setObjectName("RouteNotesDragPreview")
+        preview.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        preview.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        preview.setStyleSheet(self.styleSheet())
+        layout = QHBoxLayout(preview)
+        layout.setContentsMargins(8, 5, 8, 5)
+        layout.setSpacing(7)
+
+        icon = QLabel(preview)
+        icon.setFixedSize(_NODE_ICON_SIZE, _NODE_ICON_SIZE)
+        pixmap, _fallback = route_node_icon_pixmap(point, self._route_color_hex)
+        icon.setPixmap(pixmap)
+        layout.addWidget(icon)
+
+        name = QLabel(route_node_display_name(point, index), preview)
+        name.setObjectName("RouteNotesDragPreviewName")
+        name.setMinimumWidth(120)
+        layout.addWidget(name, stretch=1)
+
+        order = QLabel(f"{index + 1}/{len(self._nodes)}", preview)
+        order.setObjectName("RouteNotesDragPreviewOrder")
+        layout.addWidget(order)
+
+        width = self._node_rows[index].width() if 0 <= index < len(self._node_rows) else 260
+        preview.setFixedWidth(max(220, width))
+        return preview
+
+    def _move_drag_preview(self, global_pos) -> None:
+        if self._drag_preview is None:
+            return
+        self._drag_preview.move(global_pos + QPoint(12, 10))
+
+    def _update_node_drag(self, global_pos) -> None:
+        self._move_drag_preview(global_pos)
+        self._update_drop_indicator(global_pos)
+
+    def _finish_node_drag(self, from_index: int, global_pos) -> None:
+        target = self._update_drop_indicator(global_pos)
+        self._cleanup_node_drag()
+        if target is None:
+            return
+        if target > from_index:
+            target -= 1
+        self._move_node(from_index, target)
+
+    def _cleanup_node_drag(self) -> None:
+        for row in self._node_rows:
+            try:
+                row.releaseMouse()
+            except RuntimeError:
+                pass
+            row.setGraphicsEffect(None)
+        self._drag_row_effect = None
+        if self._drag_preview is not None:
+            self._drag_preview.hide()
+            self._drag_preview.deleteLater()
+            self._drag_preview = None
+        if self._drop_indicator is not None:
+            self._drop_indicator.hide()
+        self._drop_target_index = None
+
+    def _update_drop_indicator(self, global_pos) -> int | None:
+        host = self._nodes_scroll.widget()
+        indicator = self._drop_indicator
+        if host is None or indicator is None or not self._node_rows:
+            return None
+        local = host.mapFromGlobal(global_pos)
+        target = len(self._node_rows)
+        indicator_y = self._node_rows[-1].geometry().bottom() + 3
+        for index, row in enumerate(self._node_rows):
+            row_geo = row.geometry()
+            if local.y() < row_geo.center().y():
+                target = index
+                indicator_y = row_geo.top() - 3
+                break
+        indicator.setGeometry(4, max(0, indicator_y), max(24, host.width() - 8), 3)
+        indicator.show()
+        indicator.raise_()
+        self._drop_target_index = target
+        return target
+
+
 class RouteNotesDialog(StyledDialogBase):
+    nodes_changed_signal = Signal()
+    color_preview_changed = Signal(object)
+    confirm_requested = Signal()
+    cancel_requested = Signal()
+
     def __init__(
         self,
         parent,
@@ -133,13 +702,19 @@ class RouteNotesDialog(StyledDialogBase):
         route_color: tuple[int, int, int],
         color_override: str | None,
         nodes: list[dict],
+        *,
+        modal: bool = True,
     ) -> None:
-        super().__init__(parent, route_name, min_width=760, max_width=980)
+        super().__init__(parent, route_name, modal=modal, min_width=760, max_width=980)
         self._route_name = route_name
         self._notes = notes
         self._route_color_hex = route_color_to_hex(route_color)
         self._color_override = normalize_color_hex(color_override) if color_override else None
-        self._nodes = [dict(point) for point in nodes if isinstance(point, dict)]
+        self._original_nodes = [_persistable_route_node(point) for point in nodes if isinstance(point, dict)]
+        self._controller_managed = not modal
+        self._force_close = False
+        self.annotation_group_expanded = getattr(parent, "annotation_group_expanded", {})
+        self._on_annotation_group_expanded_changed = getattr(parent, "_on_annotation_group_expanded_changed", None)
 
         content = QWidget(self)
         content_layout = QHBoxLayout(content)
@@ -153,6 +728,9 @@ class RouteNotesDialog(StyledDialogBase):
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(10)
         self._build_notes_column(left_layout)
+        self.stats_panel = RouteNodeStatsPanel(left)
+        self.stats_panel.set_nodes(nodes)
+        left_layout.addWidget(self.stats_panel)
         content_layout.addWidget(left, stretch=3)
 
         right = QWidget(content)
@@ -161,9 +739,19 @@ class RouteNotesDialog(StyledDialogBase):
         right.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(_NODE_PANEL_SPACING)
-        right_layout.setAlignment(Qt.AlignTop)
-        self._build_nodes_column(right_layout)
+        right_layout.setSpacing(0)
+        self.node_panel = RouteNodeEditorPanel(
+            right,
+            route_color_hex=self.effective_color_hex(),
+            annotation_items_provider=self._annotation_items,
+            annotation_icon_path_provider=self._annotation_icon_path,
+            include_stats=False,
+            annotation_picker_placement="left_of",
+            annotation_picker_anchor=right,
+        )
+        self.node_panel.set_nodes(nodes)
+        self.node_panel.nodes_changed.connect(self._on_node_panel_nodes_changed)
+        right_layout.addWidget(self.node_panel, stretch=1)
         content_layout.addWidget(right, stretch=2)
 
         self.shell_layout.addWidget(content, stretch=1)
@@ -201,14 +789,29 @@ class RouteNotesDialog(StyledDialogBase):
         self.editor.setMinimumHeight(120)
         self.editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         layout.addWidget(self.editor, stretch=1)
-        self._build_stats_section(layout)
         self._sync_color_controls()
+
+    def _on_node_panel_nodes_changed(self) -> None:
+        self._refresh_stats_section()
+        self.nodes_changed_signal.emit()
 
     def _build_stats_section(self, layout: QVBoxLayout) -> None:
         stats_title = QLabel(strings.ROUTE_NOTES_STATS_TITLE)
         stats_title.setObjectName("FieldLabel")
         layout.addWidget(stats_title)
 
+        self._stats_scroll = make_scroll_area(
+            object_name="RouteNotesStatsScroll",
+            horizontal_policy=Qt.ScrollBarAlwaysOff,
+            vertical_policy=Qt.ScrollBarAsNeeded,
+        )
+        layout.addWidget(self._stats_scroll)
+        self._refresh_stats_section()
+
+    def _refresh_stats_section(self) -> None:
+        if hasattr(self, "stats_panel"):
+            self.stats_panel.set_nodes(self.node_panel.draft_nodes())
+        return
         stats = QFrame(self)
         stats.setObjectName("RouteNotesStatsPanel")
         stats_layout = QGridLayout(stats)
@@ -229,14 +832,9 @@ class RouteNotesDialog(StyledDialogBase):
             stats_layout.addWidget(chip, index // _STAT_COLUMNS, index % _STAT_COLUMNS)
 
         scroll_height = max(_STATS_SCROLL_DEFAULT_HEIGHT, min(_STATS_SCROLL_MAX_HEIGHT, stats.sizeHint().height()))
-        scroll = make_scroll_area(
-            object_name="RouteNotesStatsScroll",
-            horizontal_policy=Qt.ScrollBarAlwaysOff,
-            vertical_policy=Qt.ScrollBarAsNeeded,
-            fixed_height=scroll_height,
-        )
-        scroll.setWidget(stats)
-        layout.addWidget(scroll)
+        self._stats_scroll.setMinimumHeight(scroll_height)
+        self._stats_scroll.setMaximumHeight(scroll_height)
+        self._stats_scroll.setWidget(stats)
 
     def _build_nodes_column(self, layout: QVBoxLayout) -> None:
         nodes_title = QLabel(strings.ROUTE_NOTES_NODE_LIST)
@@ -245,49 +843,330 @@ class RouteNotesDialog(StyledDialogBase):
         nodes_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         layout.addWidget(nodes_title)
 
-        scroll = make_scroll_area(
+        self._nodes_scroll = make_scroll_area(
             object_name="RouteNotesNodeScroll",
             horizontal_policy=Qt.ScrollBarAlwaysOff,
             min_height=_NODE_SCROLL_MIN_HEIGHT,
             size_policy=(QSizePolicy.Expanding, QSizePolicy.Expanding),
         )
+        layout.addWidget(self._nodes_scroll, stretch=1)
+        self._refresh_node_rows()
+
+    def _refresh_node_rows(self) -> None:
+        scroll_value = 0
+        if hasattr(self, "_nodes_scroll"):
+            scroll_value = self._nodes_scroll.verticalScrollBar().value()
+
         host = QWidget()
         host.setObjectName("AnnotationPanelInner")
         host_layout = QVBoxLayout(host)
         host_layout.setContentsMargins(2, 2, 2, 2)
         host_layout.setSpacing(6)
+        self._node_rows = []
         if not self._nodes:
             empty = QLabel(strings.ROUTE_NOTES_NODE_EMPTY)
             empty.setObjectName("DimLabel")
             empty.setWordWrap(True)
             host_layout.addWidget(empty)
         else:
+            display_names = route_node_display_names(self._nodes)
             for index, point in enumerate(self._nodes):
-                host_layout.addWidget(self._build_node_row(point, index))
+                row = self._build_node_row(point, index, display_names[index])
+                self._node_rows.append(row)
+                host_layout.addWidget(row)
         host_layout.addStretch(1)
-        scroll.setWidget(host)
-        layout.addWidget(scroll, stretch=1)
+        self._nodes_scroll.setWidget(host)
+        self._nodes_scroll.verticalScrollBar().setValue(scroll_value)
+        self._drop_indicator = QFrame(host)
+        self._drop_indicator.setObjectName("RouteNotesDropIndicator")
+        self._drop_indicator.setFixedHeight(3)
+        self._drop_indicator.hide()
 
-    def _build_node_row(self, point: dict, index: int) -> QWidget:
+    def _build_node_row(self, point: dict, index: int, display_name: str) -> QWidget:
         row = QWidget()
         row.setObjectName("RouteNotesNodeRow")
+        row.setProperty("routeNotesDragIndex", index)
+        row.installEventFilter(self)
         row_layout = QHBoxLayout(row)
         row_layout.setContentsMargins(6, 4, 6, 4)
-        row_layout.setSpacing(8)
+        row_layout.setSpacing(6)
 
-        icon_label = QLabel(row)
-        icon_label.setObjectName("RouteNotesNodeIcon")
-        icon_label.setFixedSize(_NODE_ICON_SIZE, _NODE_ICON_SIZE)
+        icon_button = QPushButton(row)
+        icon_button.setObjectName("RouteNotesNodeIcon")
+        icon_button.setFixedSize(26, 26)
+        icon_button.setIconSize(icon_button.size())
         pixmap, fallback = route_node_icon_pixmap(point, self.effective_color_hex())
-        icon_label.setPixmap(pixmap)
-        icon_label.setProperty("fallbackIcon", fallback)
-        row_layout.addWidget(icon_label)
+        icon_button.setIcon(QIcon(pixmap))
+        icon_button.setProperty("fallbackIcon", fallback)
+        icon_button.setProperty("routeNotesDragIndex", index)
+        icon_button.setToolTip(self._node_annotation_tooltip(point))
+        icon_button.clicked.connect(lambda _checked=False, known_index=index: self._change_node_annotation(known_index))
+        icon_button.installEventFilter(self)
+        row_layout.addWidget(icon_button)
 
-        name_label = QLabel(route_node_display_name(point, index), row)
-        name_label.setObjectName("RouteNotesNodeName")
-        name_label.setToolTip(name_label.text())
-        row_layout.addWidget(name_label, stretch=1)
+        name_input = make_route_panel_line_edit(
+            placeholder=display_name,
+            parent=row,
+            size_policy=(QSizePolicy.Ignored, QSizePolicy.Fixed),
+        )
+        name_input.setObjectName("RouteNotesNodeName")
+        current_label = str(point.get("label") or "").strip()
+        name_input.setText(display_name if not current_label or is_auto_route_node_label(current_label) else current_label)
+        name_input.setToolTip(display_name)
+        name_input.textChanged.connect(lambda text, known_index=index: self._set_node_label(known_index, text))
+        row_layout.addWidget(name_input, stretch=1)
+
+        order_input = QLineEdit(row)
+        order_input.setObjectName("RouteNotesNodeOrderInput")
+        order_input.setProperty("routePanelInput", "true")
+        order_input.setAlignment(Qt.AlignCenter)
+        order_input.setFixedSize(58, 26)
+        order_input.setText(f"{index + 1}/{len(self._nodes)}")
+        order_input.setToolTip(strings.CHANGE_POINT_ORDER_MENU_LABEL)
+        order_input.setProperty("routeNotesDragIndex", index)
+        order_input.installEventFilter(self)
+        order_input.editingFinished.connect(
+            lambda editor=order_input, known_index=index: self._apply_order_text(known_index, editor.text())
+        )
+        row_layout.addWidget(order_input)
         return row
+
+    def _node_annotation_tooltip(self, point: dict) -> str:
+        annotation = route_node_annotation(point)
+        if annotation is None:
+            return strings.ANNOTATION_TYPE_PICKER_CLEAR
+        return annotation[1]
+
+    def _set_node_label(self, index: int, text: str) -> None:
+        if not (0 <= index < len(self._nodes)):
+            return
+        label = str(text or "").strip()
+        if label:
+            self._nodes[index]["label"] = label
+        else:
+            self._nodes[index].pop("label", None)
+
+    def _apply_order_text(self, index: int, text: str) -> None:
+        if not (0 <= index < len(self._nodes)):
+            return
+        raw_target = str(text or "").split("/", 1)[0].strip()
+        try:
+            target = int(raw_target) - 1
+        except (TypeError, ValueError):
+            self._refresh_node_rows()
+            return
+        self._move_node(index, target)
+
+    def _move_node(self, from_index: int, to_index: int) -> bool:
+        if not (0 <= from_index < len(self._nodes)):
+            return False
+        target = max(0, min(len(self._nodes) - 1, int(to_index)))
+        if target == from_index:
+            self._refresh_node_rows()
+            return False
+        point = self._nodes.pop(from_index)
+        self._nodes.insert(target, point)
+        self._refresh_after_node_change()
+        return True
+
+    def _refresh_after_node_change(self) -> None:
+        self._refresh_stats_section()
+        self._refresh_node_rows()
+
+    def _change_node_annotation(self, index: int) -> None:
+        if not (0 <= index < len(self._nodes)):
+            return
+        parent = self.parent()
+        route_mgr = getattr(parent, "route_mgr", None)
+        items = route_mgr.annotation_type_items() if route_mgr is not None and hasattr(route_mgr, "annotation_type_items") else []
+        current_type_id = str(self._nodes[index].get("typeId") or "")
+        selected = open_annotation_type_picker(self, items, current_type_id, include_clear=True)
+        if selected is None:
+            return
+        if selected.get("clear"):
+            self._nodes[index].pop("typeId", None)
+            self._nodes[index].pop("type", None)
+            self._nodes[index].pop("icon_path", None)
+            self._refresh_after_node_change()
+            return
+
+        type_id = str(selected.get("typeId") or "").strip()
+        if not type_id:
+            return
+        type_name = str(selected.get("type") or type_id).strip() or type_id
+        self._nodes[index]["typeId"] = type_id
+        self._nodes[index]["type"] = type_name
+        self._nodes[index]["icon_path"] = str(annotation_icon_path(selected, type_id))
+        self._refresh_after_node_change()
+
+    def eventFilter(self, source, event) -> bool:
+        index = source.property("routeNotesDragIndex") if hasattr(source, "property") else None
+        if index is None:
+            return super().eventFilter(source, event)
+        try:
+            index = int(index)
+        except (TypeError, ValueError):
+            return super().eventFilter(source, event)
+
+        if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.LeftButton:
+            self._drag_candidate = {
+                "index": index,
+                "start": event.globalPosition().toPoint(),
+                "active": False,
+                "source": source,
+            }
+            return False
+        if event.type() == QEvent.Type.MouseMove and self._drag_candidate is not None:
+            distance = (event.globalPosition().toPoint() - self._drag_candidate["start"]).manhattanLength()
+            if not self._drag_candidate.get("active") and distance >= QApplication.startDragDistance():
+                self._drag_candidate["active"] = True
+                self._begin_node_drag(int(self._drag_candidate["index"]), event.globalPosition().toPoint())
+            if self._drag_candidate.get("active"):
+                self._update_node_drag(event.globalPosition().toPoint())
+                return True
+            return False
+        if event.type() == QEvent.Type.MouseButtonRelease and self._drag_candidate is not None:
+            candidate = self._drag_candidate
+            self._drag_candidate = None
+            if candidate.get("active"):
+                self._finish_node_drag(int(candidate["index"]), event.globalPosition().toPoint())
+                return True
+            return False
+        return super().eventFilter(source, event)
+
+    def _begin_node_drag(self, index: int, global_pos) -> None:
+        if not (0 <= index < len(self._node_rows)):
+            return
+        row = self._node_rows[index]
+        row.grabMouse()
+        self._drag_row_effect = QGraphicsOpacityEffect(row)
+        self._drag_row_effect.setOpacity(0.32)
+        row.setGraphicsEffect(self._drag_row_effect)
+
+        preview = self._build_drag_preview(index)
+        preview.adjustSize()
+        self._drag_preview = preview
+        self._move_drag_preview(global_pos)
+        preview.show()
+        preview.raise_()
+        self._update_drop_indicator(global_pos)
+
+    def _build_drag_preview(self, index: int) -> QWidget:
+        point = self._nodes[index]
+        preview = QFrame(self, Qt.ToolTip | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
+        preview.setObjectName("RouteNotesDragPreview")
+        preview.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        preview.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        preview.setStyleSheet(self.styleSheet())
+        layout = QHBoxLayout(preview)
+        layout.setContentsMargins(8, 5, 8, 5)
+        layout.setSpacing(7)
+
+        icon = QLabel(preview)
+        icon.setFixedSize(_NODE_ICON_SIZE, _NODE_ICON_SIZE)
+        pixmap, _fallback = route_node_icon_pixmap(point, self.effective_color_hex())
+        icon.setPixmap(pixmap)
+        layout.addWidget(icon)
+
+        name = QLabel(route_node_display_name(point, index), preview)
+        name.setObjectName("RouteNotesDragPreviewName")
+        name.setMinimumWidth(120)
+        layout.addWidget(name, stretch=1)
+
+        order = QLabel(f"{index + 1}/{len(self._nodes)}", preview)
+        order.setObjectName("RouteNotesDragPreviewOrder")
+        layout.addWidget(order)
+
+        width = self._node_rows[index].width() if 0 <= index < len(self._node_rows) else 260
+        preview.setFixedWidth(max(220, width))
+        return preview
+
+    def _move_drag_preview(self, global_pos) -> None:
+        if self._drag_preview is None:
+            return
+        self._drag_preview.move(global_pos + QPoint(12, 10))
+
+    def _update_node_drag(self, global_pos) -> None:
+        self._move_drag_preview(global_pos)
+        self._update_drop_indicator(global_pos)
+
+    def _finish_node_drag(self, from_index: int, global_pos) -> None:
+        target = self._update_drop_indicator(global_pos)
+        self._cleanup_node_drag()
+        if target is None:
+            return
+        if target > from_index:
+            target -= 1
+        self._move_node(from_index, target)
+
+    def _cleanup_node_drag(self) -> None:
+        for row in self._node_rows:
+            try:
+                row.releaseMouse()
+            except RuntimeError:
+                pass
+            row.setGraphicsEffect(None)
+        self._drag_row_effect = None
+        if self._drag_preview is not None:
+            self._drag_preview.hide()
+            self._drag_preview.deleteLater()
+            self._drag_preview = None
+        if self._drop_indicator is not None:
+            self._drop_indicator.hide()
+        self._drop_target_index = None
+
+    def _update_drop_indicator(self, global_pos) -> int | None:
+        host = self._nodes_scroll.widget()
+        indicator = self._drop_indicator
+        if host is None or indicator is None or not self._node_rows:
+            return None
+        local = host.mapFromGlobal(global_pos)
+        target = len(self._node_rows)
+        indicator_y = self._node_rows[-1].geometry().bottom() + 3
+        for index, row in enumerate(self._node_rows):
+            row_geo = row.geometry()
+            if local.y() < row_geo.center().y():
+                target = index
+                indicator_y = row_geo.top() - 3
+                break
+        indicator.setGeometry(4, max(0, indicator_y), max(24, host.width() - 8), 3)
+        indicator.show()
+        indicator.raise_()
+        self._drop_target_index = target
+        return target
+
+    def _annotation_items(self) -> list[dict]:
+        parent = self.parent()
+        route_mgr = getattr(parent, "route_mgr", None)
+        if route_mgr is not None and hasattr(route_mgr, "annotation_type_items"):
+            return route_mgr.annotation_type_items()
+        return []
+
+    def _annotation_icon_path(self, type_id: object) -> str:
+        parent = self.parent()
+        route_mgr = getattr(parent, "route_mgr", None)
+        if route_mgr is not None and hasattr(route_mgr, "point_icon_path_for"):
+            return str(route_mgr.point_icon_path_for(type_id) or "")
+        return ""
+
+    def set_nodes(self, nodes: list[dict], refresh: bool = True) -> None:
+        self.node_panel.set_nodes(nodes, refresh=refresh)
+        self._refresh_stats_section()
+
+    def draft_nodes(self) -> list[dict]:
+        return self.node_panel.draft_nodes()
+
+    def _refresh_after_node_change(self) -> None:
+        self.node_panel._refresh_after_node_change()
+
+    def _change_node_annotation(self, index: int) -> None:
+        self.node_panel._change_node_annotation(index)
+
+    def _move_node(self, from_index: int, to_index: int) -> bool:
+        return self.node_panel._move_node(from_index, to_index)
+
+    def eventFilter(self, source, event) -> bool:
+        return super().eventFilter(source, event)
 
     def _pick_color(self) -> None:
         color = open_styled_color_picker(
@@ -299,10 +1178,12 @@ class RouteNotesDialog(StyledDialogBase):
             return
         self._color_override = color.name(QColor.HexRgb)
         self._sync_color_controls()
+        self.color_preview_changed.emit(self._color_override)
 
     def _reset_color(self) -> None:
         self._color_override = None
         self._sync_color_controls()
+        self.color_preview_changed.emit(self._color_override)
 
     def _sync_color_controls(self) -> None:
         effective = self.effective_color_hex()
@@ -319,6 +1200,9 @@ class RouteNotesDialog(StyledDialogBase):
         )
         self.reset_color_button.setEnabled(self._color_override is not None)
         self.reset_color_button.setToolTip(strings.ROUTE_NOTES_COLOR_RESET_TOOLTIP)
+        panel = getattr(self, "node_panel", None)
+        if panel is not None:
+            panel.set_route_color_hex(effective)
 
     def effective_color_hex(self) -> str:
         return self._color_override or self._route_color_hex
@@ -329,6 +1213,41 @@ class RouteNotesDialog(StyledDialogBase):
     def color_override(self) -> str | None:
         return self._color_override
 
+    def nodes(self) -> list[dict]:
+        return self.node_panel.nodes()
+
+    def nodes_changed(self) -> bool:
+        return self.nodes() != self._original_nodes
+
+    def accept(self) -> None:
+        if self._controller_managed and not self._force_close:
+            self.confirm_requested.emit()
+            return
+        super().accept()
+
+    def reject(self) -> None:
+        if self._controller_managed and not self._force_close:
+            self.cancel_requested.emit()
+            return
+        super().reject()
+
+    def closeEvent(self, event) -> None:
+        if self._controller_managed and not self._force_close:
+            event.ignore()
+            self.cancel_requested.emit()
+            return
+        super().closeEvent(event)
+
+    def force_close(self, accepted: bool = False) -> None:
+        self._force_close = True
+        try:
+            if accepted:
+                super().accept()
+            else:
+                super().reject()
+        finally:
+            self._force_close = False
+
 
 def edit_route_notes(
     parent,
@@ -337,8 +1256,10 @@ def edit_route_notes(
     route_color: tuple[int, int, int],
     color_override: str | None,
     nodes: list[dict],
-) -> tuple[bool, str, str | None]:
+) -> tuple[bool, str, str | None, bool, list[dict]]:
     dialog = RouteNotesDialog(parent, route_name, notes, route_color, color_override, nodes)
     center_dialog(dialog, parent)
     accepted = dialog.exec() == QDialog.Accepted
-    return accepted, dialog.notes_text(), dialog.color_override()
+    if not accepted:
+        return False, notes, color_override, False, [dict(point) for point in nodes if isinstance(point, dict)]
+    return True, dialog.notes_text(), dialog.color_override(), dialog.nodes_changed(), dialog.nodes()

@@ -44,7 +44,7 @@ class MapViewRouteDragTests(unittest.TestCase):
 
     def _view(self, route_mgr: _FakeRouteManager | None = None) -> MapView:
         view = MapView(route_mgr or _FakeRouteManager())
-        view.set_coordinate_adapter(MapCoordinateAdapter.for_map_file(config.DEFAULT_MAP_FILE))
+        view.set_coordinate_adapter(MapCoordinateAdapter.for_map_file("maps/test-map.png"))
         view.resize(200, 200)
         view._pixmap = QPixmap(200, 200)
         view._last_draw_rect = QRectF(0, 0, 200, 200)

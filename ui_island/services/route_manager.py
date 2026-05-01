@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import secrets
 import shutil
 import time
@@ -41,10 +42,21 @@ _INVALID_FILE_NAME_CHARS = set('<>:"/\\|?*')
 _POINT_ICON_SIZE = 24
 _POINT_ICON_VISITED_ALPHA = 0.35
 _ANNOTATION_ICON_SIZE = 20
+_ANNOTATION_SPATIAL_CELL_SIZE = 256
+_ANNOTATION_QUERY_PADDING_SCREEN_PX = 28
+_ANNOTATION_CLUSTER_GRID_PX = 36
+_ANNOTATION_CLUSTER_RATIO_THRESHOLD = 3.0
+_ANNOTATION_CLUSTER_VISIBLE_THRESHOLD = 600
 NODE_TYPE_COLLECT = "collect"
 NODE_TYPE_TELEPORT = "teleport"
 NODE_TYPE_VIRTUAL = "virtual"
 NODE_TYPES = {NODE_TYPE_COLLECT, NODE_TYPE_TELEPORT, NODE_TYPE_VIRTUAL}
+_NODE_TYPE_LABELS = {
+    NODE_TYPE_COLLECT: "采集点",
+    NODE_TYPE_TELEPORT: "传送点",
+    NODE_TYPE_VIRTUAL: "引路点",
+}
+_AUTO_LABEL_PATTERN = re.compile(r"^.+\s+\d+$")
 _SPECIAL_SEGMENT_COLOR = (255, 255, 255)
 _DEFAULT_ROUTE_COLOR_HEX = "#1ad1ff"
 _DEFAULT_SPECIAL_LINE_COLOR_HEX = "#ffffff"
@@ -63,6 +75,14 @@ class _GuideTarget:
 class _TeleportPoint:
     xy: tuple[float, float]
     label: str
+
+
+@dataclass(frozen=True)
+class _AnnotationSpatialEntry:
+    type_id: str
+    point_index: int
+    point: dict
+    xy: tuple[float, float]
 
 
 def _color_for_key(key: str) -> tuple[int, int, int]:
@@ -231,6 +251,30 @@ def _adapter_to_internal(
     return xy
 
 
+def _map_to_canvas_point(
+    xy: tuple[float, float],
+    vx1: float,
+    vy1: float,
+    scale_x: float,
+    scale_y: float,
+) -> tuple[int, int]:
+    return (
+        int(round((xy[0] - vx1) * scale_x)),
+        int(round((xy[1] - vy1) * scale_y)),
+    )
+
+
+def _map_rect_padding_for_screen(
+    padding_px: float,
+    scale_x: float,
+    scale_y: float,
+) -> tuple[float, float]:
+    return (
+        padding_px / max(float(scale_x), 1e-6),
+        padding_px / max(float(scale_y), 1e-6),
+    )
+
+
 def _routes_with_current_coords(routes: Iterable[dict], coord_adapter) -> list[dict]:
     _ = coord_adapter
     return list(routes)
@@ -241,6 +285,62 @@ def _node_type(point: dict | None) -> str:
         return NODE_TYPE_COLLECT
     value = str(point.get("node_type") or NODE_TYPE_COLLECT).strip().casefold()
     return value if value in NODE_TYPES else NODE_TYPE_COLLECT
+
+
+def _route_node_annotation(point: dict) -> tuple[str, str] | None:
+    type_id = str(point.get("typeId") or "").strip()
+    type_name = str(point.get("type") or "").strip()
+    if not type_id and not type_name:
+        return None
+    return type_id or type_name, type_name or type_id
+
+
+def _is_auto_route_node_label(value: object) -> bool:
+    label = str(value or "").strip()
+    return bool(label and _AUTO_LABEL_PATTERN.match(label))
+
+
+def is_auto_route_node_label(value: object) -> bool:
+    return _is_auto_route_node_label(value)
+
+
+def _route_node_auto_label(point: dict, fallback_index: int, counters: dict[str, int]) -> str:
+    annotation = _route_node_annotation(point)
+    if annotation is not None:
+        key, label = annotation
+        count_key = f"annotation:{key}"
+        counters[count_key] = counters.get(count_key, 0) + 1
+        return f"{label} {counters[count_key]}"
+
+    raw_node_type = str(point.get("node_type") or "").strip().casefold()
+    if raw_node_type in NODE_TYPES:
+        label = _NODE_TYPE_LABELS.get(raw_node_type, "节点")
+        count_key = f"node_type:{raw_node_type}"
+        counters[count_key] = counters.get(count_key, 0) + 1
+        return f"{label} {counters[count_key]}"
+
+    return f"节点 {fallback_index + 1}"
+
+
+def route_node_auto_label(point: dict, fallback_index: int, counters: dict[str, int] | None = None) -> str:
+    return _route_node_auto_label(point, fallback_index, counters if counters is not None else {})
+
+
+def _apply_route_node_auto_labels(points: list[dict]) -> None:
+    counters: dict[str, int] = {}
+    for index, point in enumerate(points):
+        if not isinstance(point, dict):
+            continue
+        generated = _route_node_auto_label(point, index, counters)
+        existing = str(point.get("label") or "").strip()
+        if not existing or _is_auto_route_node_label(existing):
+            point["label"] = generated
+
+
+def apply_route_node_auto_labels(points: list[dict], *, copy: bool = False) -> list[dict]:
+    target = [dict(point) for point in points if isinstance(point, dict)] if copy else points
+    _apply_route_node_auto_labels(target)
+    return target
 
 
 def _new_route_point_id() -> str:
@@ -381,6 +481,8 @@ def _load_point_icon_index(folder: str | os.PathLike[str] | None = None) -> dict
 
 def _load_annotation_points(path: str | os.PathLike[str] | None = None) -> dict[str, list[dict]]:
     file_path = os.fspath(path) if path is not None else _default_annotation_points_file()
+    if not file_path:
+        return {}
     if not os.path.exists(file_path):
         return {}
     try:
@@ -400,6 +502,8 @@ def _load_annotation_points(path: str | os.PathLike[str] | None = None) -> dict[
 
 def _load_annotation_type_items(path: str | os.PathLike[str] | None = None) -> list[dict]:
     file_path = os.fspath(path) if path is not None else _default_annotation_points_file()
+    if not file_path:
+        return []
     if not os.path.exists(file_path):
         return []
     try:
@@ -750,16 +854,18 @@ def _draw_spaced_direction_arrows(
     start_xy: tuple[float, float],
     target_xy: tuple[float, float],
     *,
-    vx1: int,
-    vy1: int,
+    vx1: float,
+    vy1: float,
+    scale_x: float = 1.0,
+    scale_y: float = 1.0,
     spacing: int,
     size: int,
     color: tuple[int, int, int] = _GUIDE_COLOR,
 ) -> None:
-    sx = start_xy[0] - vx1
-    sy = start_xy[1] - vy1
-    tx = target_xy[0] - vx1
-    ty = target_xy[1] - vy1
+    sx = (start_xy[0] - vx1) * scale_x
+    sy = (start_xy[1] - vy1) * scale_y
+    tx = (target_xy[0] - vx1) * scale_x
+    ty = (target_xy[1] - vy1) * scale_y
     dx = tx - sx
     dy = ty - sy
     distance = math.hypot(dx, dy)
@@ -885,7 +991,9 @@ class RouteManager:
         self._teleport_points_cache: list[_TeleportPoint] | None = None
         self._point_icon_index: dict[str, str] | None = None
         self._point_icon_cache: dict[str, np.ndarray | None] = {}
+        self._annotation_icon_cache: dict[str, np.ndarray | None] = {}
         self._annotation_points_cache: dict[str, list[dict]] | None = None
+        self._annotation_spatial_index: dict[tuple[int, int], list[_AnnotationSpatialEntry]] | None = None
         self._annotation_type_ids: set[str] = set()
         self._resource_warning_counts: dict[str, int] = {}
         self._resource_warning_examples: dict[str, list[str]] = {}
@@ -919,6 +1027,8 @@ class RouteManager:
     def annotation_metadata_warnings(self) -> list[str]:
         rel = config.selected_annotation_file_from_settings()
         path = config.selected_annotation_path_from_settings()
+        if not rel:
+            return []
         if not os.path.exists(path):
             return [f"未找到标注数据文件：{rel}"]
         try:
@@ -1011,10 +1121,18 @@ class RouteManager:
         return path if path and os.path.exists(path) else ""
 
     def annotation_icon_for(self, type_id: object) -> np.ndarray | None:
-        icon = self.point_icon_for(type_id)
+        key = str(type_id or "").strip()
+        if not key:
+            return None
+        if key in self._annotation_icon_cache:
+            return self._annotation_icon_cache[key]
+        icon = self.point_icon_for(key)
         if icon is None or icon.shape[0] == _ANNOTATION_ICON_SIZE:
+            self._annotation_icon_cache[key] = icon
             return icon
-        return cv2.resize(icon, (_ANNOTATION_ICON_SIZE, _ANNOTATION_ICON_SIZE), interpolation=cv2.INTER_AREA)
+        resized = cv2.resize(icon, (_ANNOTATION_ICON_SIZE, _ANNOTATION_ICON_SIZE), interpolation=cv2.INTER_AREA)
+        self._annotation_icon_cache[key] = resized
+        return resized
 
     def set_annotation_type_ids(self, type_ids: Iterable[object]) -> None:
         self._annotation_type_ids = {str(type_id) for type_id in type_ids if str(type_id or "")}
@@ -1027,11 +1145,98 @@ class RouteManager:
             self._annotation_points_cache = _load_annotation_points()
         return self._annotation_points_cache
 
+    def invalidate_annotation_cache(self, *, icons: bool = False) -> None:
+        self._annotation_points_cache = None
+        self._annotation_spatial_index = None
+        if icons:
+            self._point_icon_index = None
+            self._point_icon_cache.clear()
+            self._annotation_icon_cache.clear()
+
+    def _annotation_spatial_entries(self) -> dict[tuple[int, int], list[_AnnotationSpatialEntry]]:
+        if self._annotation_spatial_index is not None:
+            return self._annotation_spatial_index
+
+        index: dict[tuple[int, int], list[_AnnotationSpatialEntry]] = {}
+        loaded = None if self._annotation_points_cache is not None else self._load_annotation_payload()
+        if loaded is None:
+            points_by_type = self.annotation_points()
+        else:
+            _file_path, payload = loaded
+            points_by_type = payload.get("pointsByType", {})
+            if not isinstance(points_by_type, dict):
+                points_by_type = {}
+
+        for type_id, points in points_by_type.items():
+            if not isinstance(points, list):
+                continue
+            for point_index, point in enumerate(points):
+                if not isinstance(point, dict):
+                    continue
+                xy = _point_xy(point)
+                if xy is None:
+                    continue
+                cell = (
+                    math.floor(xy[0] / _ANNOTATION_SPATIAL_CELL_SIZE),
+                    math.floor(xy[1] / _ANNOTATION_SPATIAL_CELL_SIZE),
+                )
+                index.setdefault(cell, []).append(
+                    _AnnotationSpatialEntry(str(type_id), point_index, point, xy)
+                )
+        self._annotation_spatial_index = index
+        return index
+
+    def _annotation_entries_in_rect(
+        self,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+        *,
+        type_ids: Iterable[str] | None = None,
+        coord_adapter=None,
+    ) -> list[_AnnotationSpatialEntry]:
+        if x2 < x1:
+            x1, x2 = x2, x1
+        if y2 < y1:
+            y1, y2 = y2, y1
+        selected = set(type_ids if type_ids is not None else self._annotation_type_ids)
+        if not selected:
+            return []
+
+        index = self._annotation_spatial_entries()
+        min_cell_x = math.floor(x1 / _ANNOTATION_SPATIAL_CELL_SIZE)
+        max_cell_x = math.floor(x2 / _ANNOTATION_SPATIAL_CELL_SIZE)
+        min_cell_y = math.floor(y1 / _ANNOTATION_SPATIAL_CELL_SIZE)
+        max_cell_y = math.floor(y2 / _ANNOTATION_SPATIAL_CELL_SIZE)
+        result: list[_AnnotationSpatialEntry] = []
+        for cell_y in range(min_cell_y, max_cell_y + 1):
+            for cell_x in range(min_cell_x, max_cell_x + 1):
+                for entry in index.get((cell_x, cell_y), []):
+                    if entry.type_id not in selected:
+                        continue
+                    current_xy = _adapter_to_current(coord_adapter, entry.xy)
+                    if x1 <= current_xy[0] <= x2 and y1 <= current_xy[1] <= y2:
+                        if current_xy == entry.xy:
+                            result.append(entry)
+                        else:
+                            result.append(
+                                _AnnotationSpatialEntry(
+                                    entry.type_id,
+                                    entry.point_index,
+                                    entry.point,
+                                    current_xy,
+                                )
+                            )
+        return result
+
     def annotation_type_items(self) -> list[dict]:
         return _load_annotation_type_items()
 
     def _load_annotation_payload(self) -> tuple[str, dict] | None:
         file_path = _default_annotation_points_file()
+        if not file_path:
+            return None
         if not os.path.exists(file_path):
             return None
         try:
@@ -1061,7 +1266,7 @@ class RouteManager:
                 pass
             print(f"Write annotation points failed {file_path}: {exc}")
             return False
-        self._annotation_points_cache = None
+        self.invalidate_annotation_cache()
         return True
 
     @staticmethod
@@ -1117,29 +1322,20 @@ class RouteManager:
     ) -> dict | None:
         if threshold <= 0 or not self._annotation_type_ids:
             return None
-        loaded = self._load_annotation_payload()
-        if loaded is None:
-            return None
-        _file_path, payload = loaded
-        points_by_type = payload["pointsByType"]
-
         best: tuple[float, str, int, dict] | None = None
-        for type_id in sorted(self._annotation_type_ids):
-            points = points_by_type.get(type_id)
-            if not isinstance(points, list):
+        entries = self._annotation_entries_in_rect(
+            map_x - threshold,
+            map_y - threshold,
+            map_x + threshold,
+            map_y + threshold,
+            coord_adapter=coord_adapter,
+        )
+        for entry in entries:
+            dist = math.hypot(entry.xy[0] - map_x, entry.xy[1] - map_y)
+            if dist > threshold:
                 continue
-            for index, point in enumerate(points):
-                if not isinstance(point, dict):
-                    continue
-                xy = _point_xy(point)
-                if xy is None:
-                    continue
-                current_xy = _adapter_to_current(coord_adapter, xy)
-                dist = math.hypot(current_xy[0] - map_x, current_xy[1] - map_y)
-                if dist > threshold:
-                    continue
-                if best is None or dist < best[0]:
-                    best = (dist, type_id, index, point)
+            if best is None or dist < best[0]:
+                best = (dist, entry.type_id, entry.point_index, entry.point)
 
         if best is None:
             return None
@@ -1504,15 +1700,24 @@ class RouteManager:
             descending = sorted(cleaned, reverse=True)
             popped_points: list[dict] = []
             popped_indexes: list[int] = []
+            old_labels = [item.get("label", None) if isinstance(item, dict) else None for item in points]
             for idx in descending:
                 popped_points.append(points.pop(idx))
                 popped_indexes.append(idx)
+            _apply_route_node_auto_labels(points)
 
             try:
                 self._write_route_file(category, route.get("display_name", ""), route)
             except Exception as e:
                 for idx, saved in zip(reversed(popped_indexes), reversed(popped_points)):
                     points.insert(idx, saved)
+                for item, old_label in zip(points, old_labels):
+                    if not isinstance(item, dict):
+                        continue
+                    if old_label is None:
+                        item.pop("label", None)
+                    else:
+                        item["label"] = old_label
                 print(f"Delete points write failed route_id={route_id}: {e}")
                 continue
 
@@ -1579,6 +1784,7 @@ class RouteManager:
             else:
                 index = _best_insertion_index(insertion_points, (x, y))
 
+            old_labels = [item.get("label", None) if isinstance(item, dict) else None for item in points]
             new_point = {"id": self.new_route_point_id()}
             for key in ("label", "type", "typeId", "radius", "sourceId", "manual", "node_type"):
                 if isinstance(point_fields, dict) and key in point_fields:
@@ -1588,11 +1794,19 @@ class RouteManager:
             new_point["y"] = int(round(resource_y))
             new_point["visited"] = False
             points.insert(index, new_point)
+            _apply_route_node_auto_labels(points)
 
             try:
                 self._write_route_file(category, route.get("display_name", ""), route)
             except Exception as e:
                 points.pop(index)
+                for item, old_label in zip(points, old_labels):
+                    if not isinstance(item, dict):
+                        continue
+                    if old_label is None:
+                        item.pop("label", None)
+                    else:
+                        item["label"] = old_label
                 print(f"Insert point write failed route_id={route_id}: {e}")
                 outcomes[route_id] = None
                 continue
@@ -1626,9 +1840,9 @@ class RouteManager:
                 continue
             copied["x"] = int(round(float(copied["x"])))
             copied["y"] = int(round(float(copied["y"])))
-            copied["node_type"] = _node_type(copied)
-            copied["visited"] = False
+            copied["visited"] = bool(copied.get("visited", False))
             normalized.append(copied)
+        _apply_route_node_auto_labels(normalized)
 
         route["points"] = normalized
         if loop is not None:
@@ -1807,9 +2021,10 @@ class RouteManager:
         if from_index == target:
             return False
 
-        old_points = list(points)
+        old_points = [dict(item) if isinstance(item, dict) else item for item in points]
         point = points.pop(from_index)
         points.insert(target, point)
+        _apply_route_node_auto_labels(points)
         try:
             self._write_route_file(category, route.get("display_name", ""), route)
         except Exception as e:
@@ -1842,8 +2057,10 @@ class RouteManager:
 
         old_type_id = point.get("typeId", None)
         old_type = point.get("type", None)
+        old_labels = [item.get("label", None) if isinstance(item, dict) else None for item in points]
         point["typeId"] = type_id
         point["type"] = type_name
+        _apply_route_node_auto_labels(points)
         try:
             self._write_route_file(category, route.get("display_name", ""), route)
         except Exception as e:
@@ -1855,6 +2072,13 @@ class RouteManager:
                 point.pop("type", None)
             else:
                 point["type"] = old_type
+            for item, old_label in zip(points, old_labels):
+                if not isinstance(item, dict):
+                    continue
+                if old_label is None:
+                    item.pop("label", None)
+                else:
+                    item["label"] = old_label
             print(f"Set point annotation failed route_id={route_id} index={point_index}: {e}")
             return False
         return True
@@ -1874,6 +2098,8 @@ class RouteManager:
 
         old_type_id = point.pop("typeId", None)
         old_type = point.pop("type", None)
+        old_labels = [item.get("label", None) if isinstance(item, dict) else None for item in points]
+        _apply_route_node_auto_labels(points)
         try:
             self._write_route_file(category, route.get("display_name", ""), route)
         except Exception as e:
@@ -1881,6 +2107,13 @@ class RouteManager:
                 point["typeId"] = old_type_id
             if old_type is not None:
                 point["type"] = old_type
+            for item, old_label in zip(points, old_labels):
+                if not isinstance(item, dict):
+                    continue
+                if old_label is None:
+                    item.pop("label", None)
+                else:
+                    item["label"] = old_label
             print(f"Clear point annotation failed route_id={route_id} index={point_index}: {e}")
             return False
         return True
@@ -1900,7 +2133,9 @@ class RouteManager:
 
         normalized = _node_type({"node_type": node_type})
         old_node_type = point.get("node_type", None)
+        old_labels = [item.get("label", None) if isinstance(item, dict) else None for item in points]
         point["node_type"] = normalized
+        _apply_route_node_auto_labels(points)
         try:
             self._write_route_file(category, route.get("display_name", ""), route)
         except Exception as e:
@@ -1908,6 +2143,13 @@ class RouteManager:
                 point.pop("node_type", None)
             else:
                 point["node_type"] = old_node_type
+            for item, old_label in zip(points, old_labels):
+                if not isinstance(item, dict):
+                    continue
+                if old_label is None:
+                    item.pop("label", None)
+                else:
+                    item["label"] = old_label
             print(f"Set point node type failed route_id={route_id} index={point_index}: {e}")
             return False
         return True
@@ -2203,13 +2445,45 @@ class RouteManager:
         drawing_route: dict | None = None,
         auto_visit: bool = True,
         coord_adapter=None,
+        viewport_width: int | float | None = None,
+        viewport_height: int | float | None = None,
+        scale_x: float = 1.0,
+        scale_y: float = 1.0,
+        map_pixels_per_screen_px: float | None = None,
     ) -> None:
+        scale_x = float(scale_x or 1.0)
+        scale_y = float(scale_y or 1.0)
+        vx1 = float(vx1)
+        vy1 = float(vy1)
+        canvas_height, canvas_width = canvas.shape[:2]
+        if viewport_width is None:
+            viewport_width = canvas_width / max(scale_x, 1e-6)
+        if viewport_height is None:
+            viewport_height = canvas_height / max(scale_y, 1e-6)
+        viewport_width = float(viewport_width)
+        viewport_height = float(viewport_height)
+
+        player_xy: tuple[float, float] | None = None
         local_player = None
         if player_x is not None and player_y is not None:
-            local_player = (int(player_x - vx1), int(player_y - vy1))
+            player_xy = (float(player_x), float(player_y))
+            local_player = _map_to_canvas_point(player_xy, vx1, vy1, scale_x, scale_y)
 
-        canvas_height, canvas_width = canvas.shape[:2]
-        self._draw_annotations(canvas, vx1, vy1, canvas_width, canvas_height, coord_adapter=coord_adapter)
+        if map_pixels_per_screen_px is None:
+            map_pixels_per_screen_px = max(1.0 / max(scale_x, 1e-6), 1.0 / max(scale_y, 1e-6))
+        self._draw_annotations(
+            canvas,
+            vx1,
+            vy1,
+            canvas_width,
+            canvas_height,
+            viewport_width=viewport_width,
+            viewport_height=viewport_height,
+            scale_x=scale_x,
+            scale_y=scale_y,
+            map_pixels_per_screen_px=float(map_pixels_per_screen_px),
+            coord_adapter=coord_adapter,
+        )
         visible_routes = [
             route
             for _category, route in self.iter_routes()
@@ -2226,22 +2500,34 @@ class RouteManager:
                 ]
             visible_routes.append(drawing_route)
 
-        draw_records: list[tuple[dict, tuple[int, int, int], list[tuple[int, int] | None], list[dict], bool]] = []
+        draw_records: list[
+            tuple[
+                dict,
+                tuple[int, int, int],
+                list[tuple[int, int] | None],
+                list[tuple[float, float] | None],
+                list[dict],
+                bool,
+            ]
+        ] = []
 
         for route in visible_routes:
             route_id = self.route_id(route)
             points = route.get("points", [])
             color = self.color_for(route_id)
             local_points: list[tuple[int, int] | None] = []
+            map_points: list[tuple[float, float] | None] = []
             for point in points:
                 xy = _point_xy(point) if isinstance(point, dict) else None
                 if xy is None:
                     local_points.append(None)
+                    map_points.append(None)
                 else:
                     current_xy = _adapter_to_current(coord_adapter, xy)
-                    local_points.append((int(current_xy[0] - vx1), int(current_xy[1] - vy1)))
+                    map_points.append(current_xy)
+                    local_points.append(_map_to_canvas_point(current_xy, vx1, vy1, scale_x, scale_y))
             is_drawing_route = drawing_route is not None and route is drawing_route
-            draw_records.append((route, color, local_points, points, is_drawing_route))
+            draw_records.append((route, color, local_points, map_points, points, is_drawing_route))
 
             for index in range(len(local_points) - 1):
                 start = local_points[index]
@@ -2257,18 +2543,16 @@ class RouteManager:
                     style = _node_type(points[0] if points else None)
                     _draw_styled_line(canvas, start, end, self.route_line_color(style, color), style=style)
 
-        for _route, _color, local_points, points, is_drawing_route in draw_records:
+        for _route, _color, _local_points, map_points, points, is_drawing_route in draw_records:
             if is_drawing_route:
                 continue
-            for index, (local_point, point_data) in enumerate(zip(local_points, points)):
-                if local_point is None:
-                    continue
-                if not (0 <= local_point[0] <= canvas_width and 0 <= local_point[1] <= canvas_height):
+            for index, (map_point, point_data) in enumerate(zip(map_points, points)):
+                if map_point is None:
                     continue
 
                 visited = point_data.get("visited", False)
-                if auto_visit and not visited and local_player is not None:
-                    dist = math.hypot(local_point[0] - local_player[0], local_point[1] - local_player[1])
+                if auto_visit and not visited and player_xy is not None:
+                    dist = math.hypot(map_point[0] - player_xy[0], map_point[1] - player_xy[1])
                     if dist < _CLOSE_THRESHOLD:
                         point_data["visited"] = True
 
@@ -2288,11 +2572,13 @@ class RouteManager:
                     target.arrow_target_xy or target.xy,
                     vx1=vx1,
                     vy1=vy1,
+                    scale_x=scale_x,
+                    scale_y=scale_y,
                     spacing=_config_int("ROUTE_GUIDE_POINTER_SPACING", 28, 8),
                     size=_config_int("ROUTE_GUIDE_POINTER_SIZE", 10, 5),
                     color=self.pointer_arrow_color(),
                 )
-        for _route, color, local_points, points, _is_drawing_route in draw_records:
+        for _route, color, local_points, _map_points, points, _is_drawing_route in draw_records:
             for index, (local_point, point_data) in enumerate(zip(local_points, points)):
                 if local_point is None:
                     continue
@@ -2357,25 +2643,109 @@ class RouteManager:
         canvas_width: int,
         canvas_height: int,
         *,
+        viewport_width: int | float | None = None,
+        viewport_height: int | float | None = None,
+        scale_x: float = 1.0,
+        scale_y: float = 1.0,
+        map_pixels_per_screen_px: float = 1.0,
         coord_adapter=None,
     ) -> None:
         if not self._annotation_type_ids:
             return
-        points_by_type = self.annotation_points()
-        loaded = self._load_annotation_payload()
-        for type_id in sorted(self._annotation_type_ids):
-            icon = self.annotation_icon_for(type_id)
+        scale_x = float(scale_x or 1.0)
+        scale_y = float(scale_y or 1.0)
+        if viewport_width is None:
+            viewport_width = canvas_width / max(scale_x, 1e-6)
+        if viewport_height is None:
+            viewport_height = canvas_height / max(scale_y, 1e-6)
+
+        pad_x, pad_y = _map_rect_padding_for_screen(
+            _ANNOTATION_QUERY_PADDING_SCREEN_PX,
+            scale_x,
+            scale_y,
+        )
+        entries = self._annotation_entries_in_rect(
+            float(vx1) - pad_x,
+            float(vy1) - pad_y,
+            float(vx1) + float(viewport_width) + pad_x,
+            float(vy1) + float(viewport_height) + pad_y,
+            coord_adapter=coord_adapter,
+        )
+        if not entries:
+            return
+
+        should_cluster = (
+            float(map_pixels_per_screen_px) >= _ANNOTATION_CLUSTER_RATIO_THRESHOLD
+            or len(entries) > _ANNOTATION_CLUSTER_VISIBLE_THRESHOLD
+        )
+        if should_cluster:
+            self._draw_annotation_clusters(canvas, entries, float(vx1), float(vy1), scale_x, scale_y)
+            return
+
+        for entry in entries:
+            icon = self.annotation_icon_for(entry.type_id)
             if icon is None:
                 continue
-            for point in points_by_type.get(type_id, []):
-                xy = _point_xy(point)
-                if xy is None:
-                    continue
-                current_xy = _adapter_to_current(coord_adapter, xy)
-                local_point = (int(current_xy[0] - vx1), int(current_xy[1] - vy1))
-                if not (0 <= local_point[0] <= canvas_width and 0 <= local_point[1] <= canvas_height):
-                    continue
-                _overlay_bgra_icon(canvas, icon, local_point, opacity=1.0)
+            local_point = _map_to_canvas_point(entry.xy, float(vx1), float(vy1), scale_x, scale_y)
+            if not (
+                -_ANNOTATION_ICON_SIZE <= local_point[0] <= canvas_width + _ANNOTATION_ICON_SIZE
+                and -_ANNOTATION_ICON_SIZE <= local_point[1] <= canvas_height + _ANNOTATION_ICON_SIZE
+            ):
+                continue
+            _overlay_bgra_icon(canvas, icon, local_point, opacity=1.0)
+
+    def _draw_annotation_clusters(
+        self,
+        canvas,
+        entries: list[_AnnotationSpatialEntry],
+        vx1: float,
+        vy1: float,
+        scale_x: float,
+        scale_y: float,
+    ) -> None:
+        canvas_height, canvas_width = canvas.shape[:2]
+        clusters: dict[tuple[int, int], list[tuple[_AnnotationSpatialEntry, tuple[int, int]]]] = {}
+        for entry in entries:
+            local_point = _map_to_canvas_point(entry.xy, vx1, vy1, scale_x, scale_y)
+            if not (
+                -_ANNOTATION_CLUSTER_GRID_PX <= local_point[0] <= canvas_width + _ANNOTATION_CLUSTER_GRID_PX
+                and -_ANNOTATION_CLUSTER_GRID_PX <= local_point[1] <= canvas_height + _ANNOTATION_CLUSTER_GRID_PX
+            ):
+                continue
+            key = (
+                int(math.floor(local_point[0] / _ANNOTATION_CLUSTER_GRID_PX)),
+                int(math.floor(local_point[1] / _ANNOTATION_CLUSTER_GRID_PX)),
+            )
+            clusters.setdefault(key, []).append((entry, local_point))
+
+        for members in clusters.values():
+            if len(members) == 1:
+                entry, local_point = members[0]
+                icon = self.annotation_icon_for(entry.type_id)
+                if icon is not None:
+                    _overlay_bgra_icon(canvas, icon, local_point, opacity=1.0)
+                continue
+
+            count = len(members)
+            cx = int(round(sum(point[0] for _entry, point in members) / count))
+            cy = int(round(sum(point[1] for _entry, point in members) / count))
+            radius = max(10, min(18, 8 + len(str(count)) * 4))
+            cv2.circle(canvas, (cx, cy), radius + 2, (0, 0, 0), -1, cv2.LINE_AA)
+            cv2.circle(canvas, (cx, cy), radius, (255, 255, 255), -1, cv2.LINE_AA)
+            cv2.circle(canvas, (cx, cy), radius, (30, 30, 30), 1, cv2.LINE_AA)
+            label = str(count)
+            font_scale = 0.42 if count < 100 else 0.36
+            (text_w, text_h), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
+            cv2.putText(
+                canvas,
+                label,
+                (cx - text_w // 2, cy + (text_h - baseline) // 2),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                font_scale,
+                (0, 0, 0),
+                1,
+                cv2.LINE_AA,
+            )
 
     def _assign_route_colors(self) -> None:
         all_route_ids = sorted(

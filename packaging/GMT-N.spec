@@ -10,9 +10,11 @@ ROOT = SPEC_DIR.parent
 
 hiddenimports = [
     "Plan_SIFT.sift_tracker",
+    "tools.annotation_format_converter",
     "tools.fetch_17173_all_points",
     "tools.fetch_17173_icons",
     "tools.fetch_17173_points",
+    "tools.route_format_converter",
     "pynput.keyboard._win32",
     "pynput.mouse._win32",
 ]

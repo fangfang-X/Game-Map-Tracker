@@ -23,7 +23,7 @@ PyInstaller 配置文件放在 `packaging/` 下；请通过 `scripts/build_windo
 请把整个 `dist/GMT-N` 文件夹压缩发给用户，不要只发 exe。文件夹里会包含：
 
 - `GMT-N.exe`
-- `maps/README.md`（底图目录按用户数据保护；默认底图为 `maps/卡洛西亚大陆/big_map_17173.png`）
+- `maps/README.md`（底图目录按用户数据保护；程序默认不预置底图）
 - `config.json`
 - `routes/`
 - `annotations/`
@@ -33,7 +33,7 @@ PyInstaller 配置文件放在 `packaging/` 下；请通过 `scripts/build_windo
 
 这些数据文件需要保持和 exe 在同一个发布文件夹里，因为程序会把窗口设置、路线进度、标注数据写回这里。
 
-不要把根目录 `big_map.png` 或 `big_map_17173.png` 打进发布包。默认底图应放在 `maps/卡洛西亚大陆/big_map_17173.png`。更新清单默认保护 `maps/`、`annotations/`、`routes/`、`tools/`，但可以通过 `--include maps/卡洛西亚大陆/big_map_17173.png` 显式发布一次，也可以通过 `--delete` 推送合规删除旧资产。
+不要把根目录 `big_map.png` 或 `big_map_17173.png` 打进发布包。程序默认不预置、不预选底图或标注文件，用户需要把底图放入 `maps/`、把标注文件放入 `annotations/` 或在设置中导入后自行选择。更新清单默认保护 `maps/`、`annotations/`、`routes/`、`tools/`，如需发布一次性资源可通过 `--include` 显式加入；如需清理旧版本根目录底图，可用 `--delete big_map.png` 显式推送删除。
 
 ## 用户使用方式
 

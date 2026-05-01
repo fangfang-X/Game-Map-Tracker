@@ -9,12 +9,10 @@ from config_defaults import CONFIG_VERSION, DEFAULT_CONFIG, OBSOLETE_CONFIG_KEYS
 
 MAPS_DIR_NAME = "maps"
 MAP_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
-DEFAULT_MAP_FILE = str(DEFAULT_CONFIG.get("MAP_FILE") or "maps/卡洛西亚大陆/big_map_17173.png")
-LEGACY_ROOT_BIG_MAP = "big_map.png"
+DEFAULT_MAP_FILE = str(DEFAULT_CONFIG.get("MAP_FILE") or "")
 ANNOTATIONS_DIR_NAME = "annotations"
-DEFAULT_ANNOTATION_FILE = "annotations/points.json"
+DEFAULT_ANNOTATION_FILE = str(DEFAULT_CONFIG.get("ANNOTATION_FILE") or "")
 ANNOTATION_FILE_EXTENSIONS = (".json",)
-LEGACY_ANNOTATION_FILE = "tools/points_all/points.json"
 _INVALID_DIR_CHARS = set('<>:"/\\|?*')
 
 if getattr(sys, "frozen", False):
@@ -82,19 +80,16 @@ def normalize_map_file(value: object, base_dir: str | os.PathLike[str] | None = 
     """Normalize config map values to a relative path under maps/ when possible."""
     raw = str(value or "").strip()
     if not raw:
-        return DEFAULT_MAP_FILE
+        return ""
 
     rel = _normalize_slashes(_relative_or_basename(raw, base_dir))
     if not rel:
-        return DEFAULT_MAP_FILE
+        return ""
 
     path = PurePosixPath(rel)
     if ".." in path.parts:
         rel = path.name
         path = PurePosixPath(rel)
-
-    if rel.casefold() == LEGACY_ROOT_BIG_MAP:
-        return DEFAULT_MAP_FILE
 
     if len(path.parts) == 1 and is_map_image(path.name):
         return f"{MAPS_DIR_NAME}/{path.name}"
@@ -109,19 +104,19 @@ def selected_map_file_from_settings(
     payload: dict | None = None,
     base_dir: str | os.PathLike[str] | None = None,
 ) -> str:
-    source = payload if payload is not None else globals().get("settings", {})
-    return normalize_map_file(
-        source.get("MAP_FILE") or source.get("LOGIC_MAP_PATH") or DEFAULT_MAP_FILE,
-        base_dir,
-    )
+    source = payload if payload is not None else {"MAP_FILE": globals().get("MAP_FILE", settings.get("MAP_FILE", ""))}
+    return normalize_map_file(source.get("MAP_FILE"), base_dir)
 
 
 def selected_map_path_from_settings(
     payload: dict | None = None,
     base_dir: str | os.PathLike[str] | None = None,
 ) -> str:
+    selected = selected_map_file_from_settings(payload, base_dir)
+    if not selected:
+        return ""
     root = _base_dir(base_dir)
-    return os.path.join(root, *selected_map_file_from_settings(payload, root).split("/"))
+    return os.path.join(root, *selected.split("/"))
 
 
 def selected_map_exists(payload: dict | None = None) -> bool:
@@ -169,6 +164,8 @@ def normalize_map_directory(value: object, base_dir: str | os.PathLike[str] | No
 
 def map_directory_for_file(map_file: object, base_dir: str | os.PathLike[str] | None = None) -> str:
     rel = normalize_map_file(map_file, base_dir)
+    if not rel:
+        return MAPS_DIR_NAME
     path = PurePosixPath(rel)
     if len(path.parts) <= 1:
         return MAPS_DIR_NAME
@@ -285,20 +282,10 @@ def import_map_file(
 
 def map_display_name(map_file: object) -> str:
     rel = normalize_map_file(map_file)
+    if not rel:
+        return "请选择底图"
     name = PurePosixPath(rel).name
     return name or rel
-
-
-def cleanup_legacy_root_big_map(base_dir: str | os.PathLike[str] | None = None) -> bool:
-    """Delete only the legacy root big_map.png. User maps/big_map.png is never touched."""
-    target = os.path.join(_base_dir(base_dir), LEGACY_ROOT_BIG_MAP)
-    try:
-        if os.path.isfile(target):
-            os.remove(target)
-            return True
-    except OSError:
-        return False
-    return False
 
 
 def available_map_files() -> list[str]:
@@ -325,11 +312,11 @@ def ensure_annotations_dir() -> str:
 def normalize_annotation_file(value: object) -> str:
     raw = str(value or "").strip()
     if not raw:
-        return DEFAULT_ANNOTATION_FILE
+        return ""
 
     rel = _normalize_slashes(_relative_or_basename(raw))
     if not rel:
-        return DEFAULT_ANNOTATION_FILE
+        return ""
 
     path = PurePosixPath(rel)
     if ".." in path.parts:
@@ -359,12 +346,17 @@ def available_annotation_files() -> list[str]:
 
 
 def selected_annotation_file_from_settings(payload: dict | None = None) -> str:
-    source = payload if payload is not None else globals().get("settings", {})
-    return normalize_annotation_file(source.get("ANNOTATION_FILE") or DEFAULT_ANNOTATION_FILE)
+    source = (
+        payload
+        if payload is not None
+        else {"ANNOTATION_FILE": globals().get("ANNOTATION_FILE", settings.get("ANNOTATION_FILE", ""))}
+    )
+    return normalize_annotation_file(source.get("ANNOTATION_FILE"))
 
 
 def selected_annotation_path_from_settings(payload: dict | None = None) -> str:
-    return resolve_app_path(selected_annotation_file_from_settings(payload))
+    selected = selected_annotation_file_from_settings(payload)
+    return resolve_app_path(selected) if selected else ""
 
 
 def selected_annotation_exists(payload: dict | None = None) -> bool:
@@ -409,6 +401,8 @@ def import_annotation_file(source_path: str) -> str:
 
 def annotation_display_name(annotation_file: object) -> str:
     rel = normalize_annotation_file(annotation_file)
+    if not rel:
+        return "请选择标注文件"
     name = PurePosixPath(rel).name
     return name or rel
 
@@ -457,15 +451,9 @@ def migrate_user_config(user_config: dict) -> dict:
         # v2 引入 CONFIG_VERSION。其他新增字段由 merge_config_payload 自动补齐。
         pass
 
-    if (version < 3 or "MAP_FILE" not in migrated) and (
-        "MAP_FILE" in migrated or "LOGIC_MAP_PATH" in migrated
-    ):
-        legacy_map = migrated.get("MAP_FILE") or migrated.get("LOGIC_MAP_PATH")
-        migrated["MAP_FILE"] = normalize_map_file(legacy_map)
-
     if "MAP_FILE" in migrated:
         migrated["MAP_FILE"] = normalize_map_file(migrated.get("MAP_FILE"))
-        migrated["LOGIC_MAP_PATH"] = migrated["MAP_FILE"]
+    migrated.pop("LOGIC_MAP_PATH", None)
 
     if "ANNOTATION_FILE" in migrated:
         migrated["ANNOTATION_FILE"] = normalize_annotation_file(migrated.get("ANNOTATION_FILE"))
@@ -474,11 +462,9 @@ def migrate_user_config(user_config: dict) -> dict:
 
 
 def _sync_map_config(payload: dict) -> None:
-    if "MAP_FILE" not in payload and "LOGIC_MAP_PATH" not in payload:
+    if "MAP_FILE" not in payload:
         return
-    selected = normalize_map_file(payload.get("MAP_FILE") or payload.get("LOGIC_MAP_PATH"))
-    payload["MAP_FILE"] = selected
-    payload["LOGIC_MAP_PATH"] = selected
+    payload["MAP_FILE"] = normalize_map_file(payload.get("MAP_FILE"))
 
 
 def _sync_annotation_config(payload: dict) -> None:
@@ -565,11 +551,9 @@ def merge_config_payload(
     if obsolete_config_keys is not None:
         obsolete_keys.update(str(key) for key in obsolete_config_keys)
     merged, repaired = _merge_dict(default_config, migrated, obsolete_config_keys=obsolete_keys)
-    if "MAP_FILE" in default_config or "LOGIC_MAP_PATH" in default_config:
+    if "MAP_FILE" in default_config:
         _sync_map_config(merged)
     if "ANNOTATION_FILE" in default_config:
-        if "ANNOTATION_FILE" not in user_config and os.path.isfile(resolve_app_path(LEGACY_ANNOTATION_FILE)):
-            merged["ANNOTATION_FILE"] = LEGACY_ANNOTATION_FILE
         _sync_annotation_config(merged)
     merged["CONFIG_VERSION"] = int(default_config.get("CONFIG_VERSION", CONFIG_VERSION))
     return merged, repaired
@@ -630,7 +614,6 @@ def save_config(new_values: dict) -> None:
     # 同步更新模块级常量，避免进程内各处读到旧值
     globals().update(current)
     globals()["MAP_FILE"] = selected_map_file_from_settings(current)
-    globals()["LOGIC_MAP_PATH"] = selected_map_path_from_settings(current)
     globals()["ANNOTATION_FILE"] = selected_annotation_file_from_settings(current)
     settings.clear()
     settings.update(current)
@@ -657,6 +640,7 @@ LOCKED_VIEW_SIZE = settings.get("LOCKED_VIEW_SIZE")
 PAUSED_VIEW_SIZE = settings.get("PAUSED_VIEW_SIZE")
 ROUTE_SECTION_EXPANDED = settings.get("ROUTE_SECTION_EXPANDED") or {}
 ANNOTATION_TYPE_IDS = settings.get("ANNOTATION_TYPE_IDS") or []
+ANNOTATION_PRESETS = settings.get("ANNOTATION_PRESETS") or []
 ANNOTATION_GROUP_EXPANDED = settings.get("ANNOTATION_GROUP_EXPANDED") or {}
 QUARK_DOWNLOAD_URL = ""
 ROUTE_RESOURCE_URL = ""
@@ -699,7 +683,6 @@ def parse_window_geometry(raw) -> dict | None:
     return None
 VIEW_SIZE = settings.get("VIEW_SIZE")
 MAP_FILE = selected_map_file_from_settings(settings)
-LOGIC_MAP_PATH = selected_map_path_from_settings(settings)
 ANNOTATION_FILE = selected_annotation_file_from_settings(settings)
 MAX_LOST_FRAMES = settings.get("MAX_LOST_FRAMES")
 

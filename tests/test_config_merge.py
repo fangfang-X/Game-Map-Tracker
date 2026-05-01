@@ -187,6 +187,7 @@ class ConfigMergeTests(unittest.TestCase):
         merged, _repaired = config.merge_config_payload(config.DEFAULT_CONFIG, {"CONFIG_VERSION": 2})
 
         self.assertEqual(merged["ANNOTATION_GROUP_EXPANDED"], {})
+        self.assertEqual(merged["ANNOTATION_PRESETS"], [])
 
         merged, repaired = config.merge_config_payload(
             config.DEFAULT_CONFIG,
@@ -203,6 +204,24 @@ class ConfigMergeTests(unittest.TestCase):
 
         self.assertEqual(merged["ANNOTATION_GROUP_EXPANDED"], {})
         self.assertIn("ANNOTATION_GROUP_EXPANDED", repaired)
+
+    def test_annotation_presets_are_merged_and_repaired(self) -> None:
+        preset = {"id": "preset_1", "name": "矿物", "type_ids": ["ore", "flower"]}
+        merged, repaired = config.merge_config_payload(
+            config.DEFAULT_CONFIG,
+            {"CONFIG_VERSION": 2, "ANNOTATION_PRESETS": [preset]},
+        )
+
+        self.assertEqual(repaired, [])
+        self.assertEqual(merged["ANNOTATION_PRESETS"], [preset])
+
+        merged, repaired = config.merge_config_payload(
+            config.DEFAULT_CONFIG,
+            {"CONFIG_VERSION": 2, "ANNOTATION_PRESETS": {}},
+        )
+
+        self.assertEqual(merged["ANNOTATION_PRESETS"], [])
+        self.assertIn("ANNOTATION_PRESETS", repaired)
 
     def test_runtime_remote_config_fields_are_removed_from_config_json(self) -> None:
         user = {
@@ -277,39 +296,25 @@ class ConfigMergeTests(unittest.TestCase):
         self.assertEqual(merged["UNKNOWN_BUT_ALLOWED"], "keep")
         self.assertIn("REMOVED_BY_MANIFEST", repaired)
 
-    def test_legacy_root_big_map_config_migrates_to_maps_folder(self) -> None:
+    def test_legacy_logic_map_path_is_removed_without_migration(self) -> None:
         merged, repaired = config.merge_config_payload(
             config.DEFAULT_CONFIG,
             {"CONFIG_VERSION": 2, "LOGIC_MAP_PATH": "big_map.png"},
         )
 
         self.assertEqual(repaired, [])
-        self.assertEqual(merged["MAP_FILE"], config.DEFAULT_MAP_FILE)
-        self.assertEqual(merged["LOGIC_MAP_PATH"], config.DEFAULT_MAP_FILE)
+        self.assertEqual(merged["MAP_FILE"], "")
+        self.assertNotIn("LOGIC_MAP_PATH", merged)
 
-    def test_maps_big_map_config_is_preserved_as_user_map(self) -> None:
+    def test_map_file_config_is_preserved_as_user_map(self) -> None:
         merged, repaired = config.merge_config_payload(
             config.DEFAULT_CONFIG,
-            {"CONFIG_VERSION": 2, "LOGIC_MAP_PATH": "maps/custom/big_map.png"},
+            {"CONFIG_VERSION": 2, "MAP_FILE": "maps/custom/big_map.png"},
         )
 
         self.assertEqual(repaired, [])
         self.assertEqual(merged["MAP_FILE"], "maps/custom/big_map.png")
-        self.assertEqual(merged["LOGIC_MAP_PATH"], "maps/custom/big_map.png")
-
-    def test_cleanup_legacy_root_big_map_preserves_user_maps_folder(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root_map = Path(tmp, "big_map.png")
-            user_map = Path(tmp, "maps", "big_map.png")
-            user_map.parent.mkdir()
-            root_map.write_bytes(b"legacy")
-            user_map.write_bytes(b"user")
-
-            removed = config.cleanup_legacy_root_big_map(tmp)
-
-            self.assertTrue(removed)
-            self.assertFalse(root_map.exists())
-            self.assertEqual(user_map.read_bytes(), b"user")
+        self.assertNotIn("LOGIC_MAP_PATH", merged)
 
     def test_import_map_file_copies_into_maps_without_overwriting(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -349,7 +354,8 @@ class ConfigMergeTests(unittest.TestCase):
             self.assertEqual(existing.read_bytes(), b"picked")
 
     def test_annotation_file_defaults_and_import_copy_into_annotations(self) -> None:
-        self.assertEqual(config.DEFAULT_CONFIG["ANNOTATION_FILE"], "annotations/points.json")
+        self.assertEqual(config.DEFAULT_CONFIG["ANNOTATION_FILE"], "")
+        self.assertEqual(config.DEFAULT_ANNOTATION_FILE, "")
         with tempfile.TemporaryDirectory() as tmp:
             old_base = config.BASE_DIR
             try:

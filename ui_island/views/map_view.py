@@ -6,7 +6,7 @@ import math
 import cv2
 import numpy as np
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QWidget
 
 from ui_island.services.route_manager import NODE_TYPE_COLLECT, NODE_TYPE_TELEPORT, NODE_TYPE_VIRTUAL, RouteManager
@@ -49,12 +49,18 @@ class MapView(QWidget):
     _MAX_ZOOM = 3.5
     _ZOOM_STEP = 1.18
 
+    # 视图中心平滑追踪：防止 tracker 不稳定时地图视图大幅跳动
+    _VIEW_SMOOTH_ALPHA_LOCKED = 0.5      # LOCKED 时跟随响应快
+    _VIEW_SMOOTH_ALPHA_INERTIAL = 0.15   # INERTIAL 时跟随更慢，防止预测位置抖动传到视图
+    _VIEW_JUMP_DAMP_THRESHOLD = 80       # 单帧最大移动像素 — 超过此值会被限速
+
     def __init__(self, route_mgr: RouteManager, parent=None) -> None:
         super().__init__(parent)
         self.route_mgr = route_mgr
         self._coord_adapter = MapCoordinateAdapter.for_current_config()
         self._pixmap: QPixmap | None = None
         self._base_map: np.ndarray | None = None
+        self._mipmaps: list[tuple[int, np.ndarray]] = []
         self._map_w = 0
         self._map_h = 0
         self._last_vx1 = 0
@@ -83,6 +89,7 @@ class MapView(QWidget):
         self._last_state: TrackState | None = None
         self._last_auto_visit = True
         self._last_minimap: np.ndarray | None = None
+        self._missing_map_notice_visible = False
         self._ARROW_HALF = 16   # 从小地图中心裁取 ±16px 的箭头区域
         self._arrow_alpha = self._build_arrow_alpha(self._ARROW_HALF)
         self.setMinimumSize(260, 180)
@@ -92,7 +99,12 @@ class MapView(QWidget):
 
     def set_map(self, base_map_bgr: np.ndarray) -> None:
         self._base_map = base_map_bgr
+        self._mipmaps = [(1, base_map_bgr)]
         self._map_h, self._map_w = base_map_bgr.shape[:2]
+
+    def set_missing_map_notice_visible(self, visible: bool) -> None:
+        self._missing_map_notice_visible = bool(visible)
+        self.update()
 
     def set_coordinate_adapter(self, adapter: MapCoordinateAdapter | None) -> None:
         self._coord_adapter = adapter or MapCoordinateAdapter.for_current_config()
@@ -151,7 +163,32 @@ class MapView(QWidget):
         if minimap_bgr is not None:
             self._last_minimap = minimap_bgr
         if self._center_locked or self._view_center is None:
-            self._view_center = QPointF(float(cx), float(cy))
+            target_x = float(cx)
+            target_y = float(cy)
+            if self._view_center is None:
+                # 首次定位 — 直接设置，不需要逐渐拉到位
+                self._view_center = QPointF(target_x, target_y)
+            else:
+                # 视图中心平滑追踪：EMA + 大跳阻尼
+                cur_x = self._view_center.x()
+                cur_y = self._view_center.y()
+                dx = target_x - cur_x
+                dy = target_y - cur_y
+                dist = math.hypot(dx, dy)
+                if dist > self._VIEW_JUMP_DAMP_THRESHOLD:
+                    # 大跳：限速到阈值距离（防 anchor 重置/误判时视图甩飞）
+                    scale = self._VIEW_JUMP_DAMP_THRESHOLD / dist
+                    new_x = cur_x + dx * scale
+                    new_y = cur_y + dy * scale
+                else:
+                    alpha = (
+                        self._VIEW_SMOOTH_ALPHA_INERTIAL
+                        if state == TrackState.INERTIAL
+                        else self._VIEW_SMOOTH_ALPHA_LOCKED
+                    )
+                    new_x = cur_x + dx * alpha
+                    new_y = cur_y + dy * alpha
+                self._view_center = QPointF(new_x, new_y)
 
         self._render_frame(state, cx, cy, auto_visit=True)
 
@@ -161,15 +198,38 @@ class MapView(QWidget):
 
         crop_w, crop_h = self._crop_dimensions()
         vx1, vy1, vx2, vy2 = self._crop_bounds(crop_w, crop_h)
-        crop = self._base_map[vy1:vy2, vx1:vx2].copy()
+        viewport_w = max(1, vx2 - vx1)
+        viewport_h = max(1, vy2 - vy1)
+        render_w, render_h = self._render_dimensions(viewport_w, viewport_h)
+        if render_w <= 0 or render_h <= 0:
+            return
+        map_pixels_per_screen_px = max(
+            viewport_w / max(render_w, 1),
+            viewport_h / max(render_h, 1),
+        )
+        mip_divisor, mipmap = self._mipmap_for_ratio(map_pixels_per_screen_px)
+        mx1 = max(0, min(mipmap.shape[1] - 1, int(math.floor(vx1 / mip_divisor))))
+        my1 = max(0, min(mipmap.shape[0] - 1, int(math.floor(vy1 / mip_divisor))))
+        mx2 = max(mx1 + 1, min(mipmap.shape[1], int(math.ceil(vx2 / mip_divisor))))
+        my2 = max(my1 + 1, min(mipmap.shape[0], int(math.ceil(vy2 / mip_divisor))))
+        crop = cv2.resize(
+            mipmap[my1:my2, mx1:mx2],
+            (render_w, render_h),
+            interpolation=cv2.INTER_AREA if map_pixels_per_screen_px >= 1.0 else cv2.INTER_LINEAR,
+        )
 
         self._last_vx1, self._last_vy1 = vx1, vy1
-        self._last_crop_size = (crop.shape[1], crop.shape[0])
+        self._last_crop_size = (viewport_w, viewport_h)
+        draw_x = (self.width() - render_w) / 2.0
+        draw_y = (self.height() - render_h) / 2.0
+        self._last_draw_rect = QRectF(draw_x, draw_y, float(render_w), float(render_h))
 
         drawing_route = self._drawing_route_payload()
         drawing_active = drawing_route is not None
         draw_player_x = None if drawing_active else cx
         draw_player_y = None if drawing_active else cy
+        scale_x = render_w / float(viewport_w)
+        scale_y = render_h / float(viewport_h)
         self.route_mgr.draw_on(
             crop,
             vx1,
@@ -180,6 +240,11 @@ class MapView(QWidget):
             drawing_route=drawing_route,
             auto_visit=auto_visit,
             coord_adapter=self._coord_adapter,
+            viewport_width=viewport_w,
+            viewport_height=viewport_h,
+            scale_x=scale_x,
+            scale_y=scale_y,
+            map_pixels_per_screen_px=map_pixels_per_screen_px,
         )
         if drawing_active:
             self.guide_hint_changed.emit(None)
@@ -190,14 +255,14 @@ class MapView(QWidget):
                     cy,
                     vx1,
                     vy1,
-                    crop.shape[1],
-                    crop.shape[0],
+                    viewport_w,
+                    viewport_h,
                     coord_adapter=self._coord_adapter,
                 )
             )
 
-        local_x = cx - vx1
-        local_y = cy - vy1
+        local_x = int(round((cx - vx1) * scale_x))
+        local_y = int(round((cy - vy1) * scale_y))
         if not drawing_active and 0 <= local_x < crop.shape[1] and 0 <= local_y < crop.shape[0]:
             if state == TrackState.INERTIAL:
                 # 惯性态无新截图：黄圈降级显示
@@ -212,6 +277,46 @@ class MapView(QWidget):
         image = QImage(rgb.data, width, height, width * 3, QImage.Format_RGB888).copy()
         self._pixmap = QPixmap.fromImage(image)
         self.update()
+
+    def _render_dimensions(self, viewport_w: int, viewport_h: int) -> tuple[int, int]:
+        widget_w = max(1, self.width())
+        widget_h = max(1, self.height())
+        if viewport_w <= 0 or viewport_h <= 0:
+            return widget_w, widget_h
+        scale = min(widget_w / float(viewport_w), widget_h / float(viewport_h))
+        return max(1, int(round(viewport_w * scale))), max(1, int(round(viewport_h * scale)))
+
+    def _mipmap_for_ratio(self, map_pixels_per_screen_px: float) -> tuple[int, np.ndarray]:
+        if self._base_map is None:
+            raise RuntimeError("base map is not set")
+        if not self._mipmaps:
+            self._mipmaps = [(1, self._base_map)]
+
+        target_divisor = 1
+        while (
+            target_divisor * 2 <= max(1.0, float(map_pixels_per_screen_px))
+            and min(self._mipmaps[-1][1].shape[:2]) > 512
+        ):
+            target_divisor *= 2
+            if self._mipmaps[-1][0] >= target_divisor:
+                continue
+            previous_divisor, previous = self._mipmaps[-1]
+            if previous_divisor * 2 != target_divisor:
+                break
+            next_map = cv2.resize(
+                previous,
+                (max(1, previous.shape[1] // 2), max(1, previous.shape[0] // 2)),
+                interpolation=cv2.INTER_AREA,
+            )
+            self._mipmaps.append((target_divisor, next_map))
+
+        chosen = self._mipmaps[0]
+        for divisor, image in self._mipmaps:
+            if divisor <= max(1.0, float(map_pixels_per_screen_px)):
+                chosen = (divisor, image)
+            else:
+                break
+        return chosen
 
     def _crop_dimensions(self) -> tuple[int, int]:
         view_w = max(self.width(), 100)
@@ -296,10 +401,9 @@ class MapView(QWidget):
     def _draw_rect(self) -> QRectF:
         if self._pixmap is None:
             return QRectF()
-        scaled = self._pixmap.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        x = (self.width() - scaled.width()) / 2.0
-        y = (self.height() - scaled.height()) / 2.0
-        return QRectF(x, y, float(scaled.width()), float(scaled.height()))
+        x = (self.width() - self._pixmap.width()) / 2.0
+        y = (self.height() - self._pixmap.height()) / 2.0
+        return QRectF(x, y, float(self._pixmap.width()), float(self._pixmap.height()))
 
     def _widget_to_map(self, pos: QPointF) -> tuple[float, float] | None:
         if self._pixmap is None:
@@ -439,22 +543,33 @@ class MapView(QWidget):
         self._center_locked = False
         self.manual_view_changed.emit()
 
+    def _draw_missing_map_notice(self, painter: QPainter) -> None:
+        if not self._missing_map_notice_visible:
+            return
+        font = QFont(painter.font())
+        font.setPointSize(max(22, min(42, int(self.height() * 0.11))))
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(QColor(255, 255, 255))
+        painter.drawText(self.rect(), Qt.AlignCenter, strings.MAP_MISSING_BASE_MAP_NOTICE)
+
     def paintEvent(self, _event):
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.SmoothPixmapTransform)
         if self._pixmap is None:
             self._last_draw_rect = QRectF()
+            self._draw_missing_map_notice(painter)
             return
 
-        scaled = self._pixmap.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        x = (self.width() - scaled.width()) / 2.0
-        y = (self.height() - scaled.height()) / 2.0
-        self._last_draw_rect = QRectF(x, y, float(scaled.width()), float(scaled.height()))
-        painter.drawPixmap(int(x), int(y), scaled)
+        draw_rect = self._draw_rect()
+        self._last_draw_rect = draw_rect
+        painter.drawPixmap(int(draw_rect.left()), int(draw_rect.top()), self._pixmap)
         self._draw_drawing_preview(painter)
+        self._draw_missing_map_notice(painter)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        if self._pixmap is not None:
+            self._refresh_from_last_frame()
 
     def keyPressEvent(self, event):
         if (

@@ -34,8 +34,9 @@ ROUTE_TRACKED_JUMP_EMPTY_BODY = "这条路线没有可用节点。"
 ROUTE_TRACKED_JUMP_TO_NODE_FMT = "已跳转到第 {index} 个节点"
 ROUTE_TRACKED_JUMP_COMPLETED_FMT = "路线已完成，已显示第 {index} 个节点"
 ROUTE_EMPTY_TRACKED = "暂无已选择路线"
-ANNOTATION_ROUTE_HINT = "标注数据来源于17173地图,感谢17173的地图标注工作者们"
+ANNOTATION_ROUTE_HINT = "内置标注数据来源于17173地图,感谢17173的地图标注工作者们"
 ANNOTATION_SOURCE_LINKS = (("17173地图", "https://map.17173.com/rocom/maps/shijie"),)
+ANNOTATION_SOURCE_LINK_COLOR = "#bde9ff"
 ANNOTATION_ROUTE_HINT_COMPACT = "右键标注规划不代表实际最优"
 ANNOTATION_PLAN_ROUTE = "生成点位最优路线"
 ANNOTATION_PLAN_ROUTE_SUCCESS_FMT = "已生成路线“{name}”"
@@ -63,6 +64,9 @@ ROUTE_NOTES_CONFIRM = "确认修改"
 ROUTE_NOTES_CANCEL = "取消修改"
 ROUTE_NOTES_SAVED = "已保存路线“{name}”的说明和颜色"
 ROUTE_NOTES_SAVE_FAILED = "保存路线“{name}”的说明和颜色失败"
+ROUTE_NOTES_DISCARD_TITLE = "放弃路线详情修改"
+ROUTE_NOTES_DISCARD_BODY = "当前路线详情或节点有未保存的修改，要放弃并恢复到打开前的状态吗？"
+ROUTE_NOTES_DISCARD_CONFIRM = "放弃"
 ROUTE_NOTES_NOTES_LABEL = "路线说明"
 ROUTE_NOTES_COLOR_LABEL = "路线颜色"
 ROUTE_NOTES_COLOR_PICK = "选择路线颜色"
@@ -152,6 +156,7 @@ HEADER_UNLOCK = "解锁"
 HEADER_UNLOCK_HINT = "快捷键 Alt+` 解锁"
 
 MAP_HINT = "滚轮缩放，左键拖动，双击选点"
+MAP_MISSING_BASE_MAP_NOTICE = "请在设置中设置底图"
 
 INSERT_POINT_DIALOG_TITLE = "添加节点到路线"
 INSERT_POINT_COORD_FMT = "坐标：X = {x}，Y = {y}"
@@ -186,6 +191,7 @@ CHANGE_POINT_ORDER_MENU_LABEL = "修改顺序"
 ANNOTATION_TYPE_PICKER_TITLE = "选择节点标注"
 ANNOTATION_TYPE_PICKER_EMPTY = "未找到可用标注，请先在设置中选择或拉取标注文件"
 ANNOTATION_TYPE_PICKER_CANCEL = "取消"
+ANNOTATION_TYPE_PICKER_CLEAR = "无标注"
 POINT_ANNOTATION_SUCCESS_FMT = "已更新节点标注为“{name}”"
 POINT_ANNOTATION_DELETE_SUCCESS = "已删除节点标注"
 POINT_ANNOTATION_FAIL_TITLE = "标注更新失败"
@@ -278,7 +284,10 @@ def annotation_route_hint_html() -> str:
         if not safe_label:
             continue
         safe_url = escape(str(url), quote=True)
-        text = text.replace(safe_label, f'<a href="{safe_url}">{safe_label}</a>')
+        text = text.replace(
+            safe_label,
+            f'<a href="{safe_url}" style="color:{ANNOTATION_SOURCE_LINK_COLOR};">{safe_label}</a>',
+        )
     return text
 
 

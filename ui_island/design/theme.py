@@ -1,5 +1,8 @@
 """Theme constants for the island overlay UI."""
 
+from PySide6.QtCore import QEvent, QObject, Qt
+from PySide6.QtWidgets import QWidget
+
 COLLAPSED_W = 280
 COLLAPSED_H = 44
 EXPANDED_W = 820
@@ -43,8 +46,8 @@ QToolTip {{
     background: rgba(28, 28, 30, 245);
     color: {FG};
     border: 1px solid rgba(255, 255, 255, 0.14);
-    border-radius: 8px;
-    padding: 5px 8px;
+    border-radius: 5px;
+    padding: 1px 6px;
     margin: 0px;
     font-size: 11px;
 }}
@@ -99,6 +102,17 @@ QColorDialog QPushButton:pressed {{
 """
 
 
+class _ToolTipTranslucencyFilter(QObject):
+    def eventFilter(self, obj, event) -> bool:  # type: ignore[override]
+        if event.type() == QEvent.Show and isinstance(obj, QWidget):
+            if obj.windowType() == Qt.ToolTip:
+                obj.setAttribute(Qt.WA_TranslucentBackground, True)
+        return False
+
+
+_TOOLTIP_FILTER: _ToolTipTranslucencyFilter | None = None
+
+
 def ensure_tooltip_style() -> None:
     try:
         from PySide6.QtWidgets import QApplication
@@ -116,6 +130,12 @@ def ensure_tooltip_style() -> None:
     base = app.styleSheet().rstrip()
     if TOOLTIP_QSS not in base:
         app.setStyleSheet(f"{base}\n{TOOLTIP_QSS}".strip())
+
+    global _TOOLTIP_FILTER
+    if _TOOLTIP_FILTER is None:
+        _TOOLTIP_FILTER = _ToolTipTranslucencyFilter()
+        app.installEventFilter(_TOOLTIP_FILTER)
+
     app.setProperty(marker, True)
 
 ISLAND_QSS = f"""
@@ -515,6 +535,79 @@ QLineEdit:focus {{
     border: 1px solid rgba(10, 132, 255, 0.65);
     background: {ACCENT_SOFT};
 }}
+QComboBox {{
+    background: rgba(255, 255, 255, 0.08);
+    color: {FG};
+    border: 1px solid {BORDER};
+    border-radius: 10px;
+    padding: 4px 28px 4px 10px;
+    font-size: 11px;
+    selection-background-color: {ACCENT};
+    min-height: 18px;
+}}
+QComboBox:hover {{
+    border: 1px solid rgba(255, 255, 255, 0.22);
+}}
+QComboBox:focus,
+QComboBox:on {{
+    border: 1px solid rgba(10, 132, 255, 0.65);
+    background: {ACCENT_SOFT};
+}}
+QComboBox:disabled {{
+    color: {FG_DIM};
+    background: rgba(255, 255, 255, 0.04);
+}}
+QComboBox::drop-down {{
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 22px;
+    border: none;
+    background: transparent;
+}}
+QComboBox::down-arrow {{
+    width: 10px;
+    height: 10px;
+}}
+QComboBox QAbstractItemView {{
+    background: rgba(28, 28, 30, 245);
+    color: {FG};
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 10px;
+    padding: 4px;
+    outline: 0;
+    selection-background-color: {ACCENT};
+    selection-color: white;
+}}
+QComboBox QAbstractItemView::item {{
+    padding: 3px 10px;
+    border-radius: 6px;
+    min-height: 18px;
+}}
+QComboBox QAbstractItemView::item:hover {{
+    background: rgba(255, 255, 255, 0.10);
+}}
+QComboBox QAbstractItemView::item:selected {{
+    background: {ACCENT};
+    color: white;
+}}
+QPushButton#SettingsTabButton {{
+    background: transparent;
+    color: {FG_DIM};
+    border: none;
+    border-radius: 7px;
+    padding: 4px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    min-height: 22px;
+}}
+QPushButton#SettingsTabButton:hover {{
+    background: rgba(255, 255, 255, 0.08);
+    color: {FG};
+}}
+QPushButton#SettingsTabButton[selected="true"] {{
+    background: rgba(255, 255, 255, 0.14);
+    color: {FG};
+}}
 QKeySequenceEdit {{
     background: rgba(255, 255, 255, 0.08);
     color: {FG};
@@ -622,56 +715,41 @@ QScrollArea#SidebarOverlayScroll > QWidget > QWidget {{
 QScrollArea > QWidget > QWidget {{
     background: transparent;
 }}
-QScrollArea#RouteNotesNodeScroll,
-QScrollArea#RouteNotesStatsScroll {{
-    background: transparent;
-    border: none;
-}}
-QScrollArea#RouteNotesNodeScroll QScrollBar:vertical,
-QScrollArea#RouteNotesStatsScroll QScrollBar:vertical {{
+QScrollBar:vertical {{
     background: transparent;
     width: 10px;
     margin: 0px;
 }}
-QScrollArea#RouteNotesNodeScroll QScrollBar::handle:vertical,
-QScrollArea#RouteNotesStatsScroll QScrollBar::handle:vertical {{
+QScrollBar:horizontal {{
+    background: transparent;
+    height: 10px;
+    margin: 0px;
+}}
+QScrollBar::handle:vertical,
+QScrollBar::handle:horizontal {{
     background: rgba(255, 255, 255, 0.42);
     border-radius: 5px;
     min-height: 24px;
+    min-width: 24px;
 }}
-QScrollArea#RouteNotesNodeScroll QScrollBar::handle:vertical:hover,
-QScrollArea#RouteNotesStatsScroll QScrollBar::handle:vertical:hover {{
+QScrollBar::handle:vertical:hover,
+QScrollBar::handle:horizontal:hover {{
     background: rgba(255, 255, 255, 0.58);
 }}
-QScrollArea#RouteNotesNodeScroll QScrollBar::add-line:vertical,
-QScrollArea#RouteNotesNodeScroll QScrollBar::sub-line:vertical,
-QScrollArea#RouteNotesStatsScroll QScrollBar::add-line:vertical,
-QScrollArea#RouteNotesStatsScroll QScrollBar::sub-line:vertical {{
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical,
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal {{
     height: 0px;
+    width: 0px;
     background: transparent;
     border: none;
 }}
-QScrollArea#RouteNotesNodeScroll QScrollBar::add-page:vertical,
-QScrollArea#RouteNotesNodeScroll QScrollBar::sub-page:vertical,
-QScrollArea#RouteNotesStatsScroll QScrollBar::add-page:vertical,
-QScrollArea#RouteNotesStatsScroll QScrollBar::sub-page:vertical {{
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical,
+QScrollBar::add-page:horizontal,
+QScrollBar::sub-page:horizontal {{
     background: transparent;
-}}
-QScrollBar:vertical {{
-    background: transparent;
-    width: 6px;
-}}
-QScrollBar::handle:vertical {{
-    background: rgba(255, 255, 255, 0.35);
-    border-radius: 3px;
-}}
-QScrollBar:horizontal {{
-    background: transparent;
-    height: 6px;
-}}
-QScrollBar::handle:horizontal {{
-    background: rgba(255, 255, 255, 0.35);
-    border-radius: 3px;
 }}
 QMenu {{
     background: rgba(28, 28, 30, 245);
@@ -749,6 +827,14 @@ QFrame#RouteDrawingToolbar QPushButton:hover {{
 QFrame#RouteDrawingToolbar QPushButton:checked {{
     background: rgba(74, 144, 226, 0.92);
     color: #ffffff;
+}}
+QFrame#RouteDrawingToolbar QPushButton#RouteNotesNodeIcon {{
+    min-width: 26px;
+    max-width: 26px;
+    min-height: 26px;
+    max-height: 26px;
+    padding: 1px;
+    border-radius: 7px;
 }}
 QFrame#RouteDrawingToolbar QCheckBox {{
     spacing: 6px;
@@ -841,9 +927,46 @@ QWidget#RouteNotesNodeRow {{
 QWidget#RouteNotesNodeRow:hover {{
     background: rgba(255, 255, 255, 0.075);
 }}
-QLabel#RouteNotesNodeName {{
+QFrame#RouteNotesDropIndicator {{
+    background: rgba(255, 214, 10, 0.95);
+    border-radius: 1px;
+}}
+QFrame#RouteNotesDragPreview {{
+    background: rgba(32, 32, 36, 0.96);
+    border: 1px solid rgba(255, 214, 10, 0.60);
+    border-radius: 7px;
+}}
+QLabel#RouteNotesDragPreviewName {{
     color: {FG};
     font-size: 11px;
+    font-weight: 600;
+}}
+QLabel#RouteNotesDragPreviewOrder {{
+    color: {FG_DIM};
+    font-size: 10px;
+}}
+QPushButton#RouteNotesNodeIcon {{
+    min-width: 26px;
+    max-width: 26px;
+    min-height: 26px;
+    max-height: 26px;
+    padding: 1px;
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}}
+QPushButton#RouteNotesNodeIcon:hover {{
+    background: rgba(74, 144, 226, 0.22);
+    border-color: rgba(120, 180, 255, 0.35);
+}}
+QLineEdit#RouteNotesNodeName {{
+    color: {FG};
+    font-size: 11px;
+}}
+QLineEdit#RouteNotesNodeOrderInput {{
+    padding-left: 2px;
+    padding-right: 2px;
+    font-size: 10px;
 }}
 QPushButton#AnnotationPanelBulkButton {{
     min-height: 18px;
@@ -896,5 +1019,44 @@ QPushButton#AnnotationTypeRow[selected="true"] {{
 }}
 QPushButton#AnnotationTypeRow:hover {{
     background: rgba(255, 255, 255, 0.08);
+}}
+QWidget#AnnotationPresetRow {{
+    background: transparent;
+    border-radius: 7px;
+}}
+QPushButton#AnnotationPresetNameButton {{
+    min-height: 24px;
+    padding: 2px 7px;
+    border-radius: 7px;
+    text-align: left;
+    color: {FG};
+    background: rgba(255, 255, 255, 0.045);
+    border: 1px solid rgba(255, 255, 255, 0.055);
+}}
+QPushButton#AnnotationPresetNameButton[selected="true"] {{
+    background: rgba(255, 214, 10, 0.18);
+    border-color: rgba(255, 224, 80, 0.42);
+    color: #fff5c2;
+}}
+QPushButton#AnnotationPresetNameButton:hover {{
+    background: rgba(255, 255, 255, 0.09);
+}}
+QPushButton#AnnotationPresetActionButton {{
+    min-height: 24px;
+    max-height: 24px;
+    padding: 0px;
+    border-radius: 7px;
+    color: {FG};
+    background: rgba(255, 255, 255, 0.055);
+    border: 1px solid rgba(255, 255, 255, 0.065);
+    font-size: 10px;
+    font-weight: 600;
+}}
+QPushButton#AnnotationPresetActionButton:hover {{
+    background: rgba(255, 255, 255, 0.11);
+}}
+QPushButton#AnnotationPresetActionButton[danger="true"]:hover {{
+    background: rgba(255, 69, 58, 0.22);
+    border-color: rgba(255, 110, 100, 0.40);
 }}
 """

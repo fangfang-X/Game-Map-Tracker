@@ -599,7 +599,7 @@ class AppUpdaterTests(unittest.TestCase):
 
         self.assertEqual(manifest["obsolete_config_keys"], ["ROUTE_RECENT_LIMIT", "LEGACY_FLAG"])
 
-    def test_generate_manifest_deletes_legacy_root_big_map_by_default(self) -> None:
+    def test_generate_manifest_protects_user_map_files_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             Path(root, "demo.txt").write_bytes(b"demo")
@@ -608,7 +608,7 @@ class AppUpdaterTests(unittest.TestCase):
             maps_dir = Path(root, "maps")
             maps_dir.mkdir()
             Path(maps_dir, "README.md").write_text("maps go here", encoding="utf-8")
-            Path(maps_dir, "big_map.png").write_bytes(b"user-map")
+            Path(maps_dir, "custom.png").write_bytes(b"user-map")
 
             manifest = generate_update_manifest.build_manifest(
                 root,
@@ -622,16 +622,37 @@ class AppUpdaterTests(unittest.TestCase):
 
         paths = {item["path"] for item in manifest["files"]}
         self.assertIn("demo.txt", paths)
-        self.assertNotIn("maps/README.md", paths)
         self.assertNotIn("big_map.png", paths)
         self.assertNotIn("big_map_17173.png", paths)
-        self.assertNotIn("maps/big_map.png", paths)
+        self.assertNotIn("maps/README.md", paths)
+        self.assertNotIn("maps/custom.png", paths)
+        self.assertEqual(manifest["delete"], [])
+
+    def test_generate_manifest_can_force_delete_legacy_root_big_map(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            Path(root, "demo.txt").write_bytes(b"demo")
+
+            manifest = generate_update_manifest.build_manifest(
+                root,
+                version="0.2.0",
+                base_url="https://example.test/update/",
+                notes="",
+                requires_launcher_update=False,
+                prompt_update=False,
+                force_update_prompt=False,
+                delete_paths=["big_map.png"],
+            )
+
+        paths = {item["path"] for item in manifest["files"]}
+        self.assertIn("demo.txt", paths)
+        self.assertNotIn("big_map.png", paths)
         self.assertEqual(manifest["delete"], ["big_map.png"])
 
     def test_generate_manifest_can_explicitly_include_protected_map_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            target = Path(root, "maps", "big_map_17173.png")
+            target = Path(root, "maps", "custom.png")
             target.parent.mkdir()
             target.write_bytes(b"publish-once")
 
@@ -643,10 +664,10 @@ class AppUpdaterTests(unittest.TestCase):
                 requires_launcher_update=False,
                 prompt_update=False,
                 force_update_prompt=False,
-                include_paths=["maps/big_map_17173.png"],
+                include_paths=["maps/custom.png"],
             )
 
-        self.assertEqual([item["path"] for item in manifest["files"]], ["maps/big_map_17173.png"])
+        self.assertEqual([item["path"] for item in manifest["files"]], ["maps/custom.png"])
 
     def test_write_default_config_uses_clean_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1271,6 +1292,28 @@ class AppUpdaterTests(unittest.TestCase):
         self.assertEqual(merged["VIEW_SIZE"], 500)
         self.assertEqual(merged["WINDOW_GEOMETRY"], {"x": 9, "y": 8, "width": 420, "height": 360})
         self.assertNotIn("OLD_ROUTE_LIMIT", merged)
+
+    def test_install_update_can_force_delete_legacy_root_big_map(self) -> None:
+        manifest = app_updater.AppUpdateManifest(
+            version="0.2.0",
+            notes="",
+            files=(),
+            delete=("big_map.png",),
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config.BASE_DIR = tmp
+            target = Path(tmp, "big_map.png")
+            target.write_bytes(b"legacy")
+            staging = Path(tmp, "staging")
+            staging.mkdir()
+            plan = app_updater.build_update_plan(manifest, current_version="0.1.0")
+
+            result = app_updater.install_non_restart_update(plan, staging)
+
+            self.assertTrue(result.ok)
+            self.assertFalse(target.exists())
+            self.assertEqual(result.installed_files, ("big_map.png",))
 
     def test_config_local_change_does_not_trigger_update_when_defaults_installed(self) -> None:
         defaults = {"CONFIG_VERSION": 2, "SIDEBAR_WIDTH": 270}

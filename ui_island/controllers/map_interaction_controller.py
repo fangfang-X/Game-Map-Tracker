@@ -242,7 +242,35 @@ class MapInteractionController:
     def has_route_point_move_undo(self) -> bool:
         return self._last_point_move_undo is not None
 
+    def _route_notes_controller(self):
+        controller = getattr(self.window, "route_panel_controller", None)
+        return controller if controller is not None else None
+
+    def _has_route_notes_draft(self, route_id: str) -> bool:
+        controller = self._route_notes_controller()
+        checker = getattr(controller, "has_active_route_notes_draft", None)
+        return bool(callable(checker) and checker(route_id))
+
+    def _route_notes_draft_nodes(self, route_id: str) -> list[dict] | None:
+        controller = self._route_notes_controller()
+        getter = getattr(controller, "route_notes_draft_nodes", None)
+        return getter(route_id) if callable(getter) else None
+
     def move_route_point_preview(self, route_id: str, point_index: int, x: int, y: int) -> None:
+        if self._has_route_notes_draft(route_id):
+            controller = self._route_notes_controller()
+            mover = getattr(controller, "move_route_notes_point", None)
+            if callable(mover) and mover(
+                route_id,
+                point_index,
+                x,
+                y,
+                coord_adapter=self._coordinate_adapter(),
+                refresh_panel=False,
+            ):
+                self._refresh_route_point_ui()
+            return
+
         if not self._set_point_position(
             route_id,
             point_index,
@@ -266,6 +294,22 @@ class MapInteractionController:
         before = (int(before_x), int(before_y))
         after = (int(after_x), int(after_y))
         if before == after:
+            return
+
+        if self._has_route_notes_draft(route_id):
+            controller = self._route_notes_controller()
+            mover = getattr(controller, "move_route_notes_point", None)
+            if callable(mover):
+                mover(
+                    route_id,
+                    point_index,
+                    after[0],
+                    after[1],
+                    coord_adapter=self._coordinate_adapter(),
+                    refresh_panel=True,
+                )
+            self.clear_route_point_move_undo()
+            self._refresh_route_point_ui()
             return
 
         route_mgr = self.window.route_mgr
@@ -338,6 +382,23 @@ class MapInteractionController:
         if drawing is not None and drawing.active and route_id == drawing.route_id:
             self.window.route_panel_controller.change_drawing_point_order(point_index)
             return
+        if self._has_route_notes_draft(route_id):
+            points = self._route_notes_draft_nodes(route_id) or []
+            if not isinstance(point_index, int) or not (0 <= point_index < len(points)) or len(points) < 2:
+                return
+            route_mgr = self.window.route_mgr
+            route = route_mgr.route_for_id(route_id)
+            summary = route_mgr.summarize_route(route_id)
+            route_name = str((summary or {}).get("display_label") or (route or {}).get("display_name") or route_id)
+            target = open_point_order_dialog(self.window, route_name, point_index, len(points))
+            if target is None or target == point_index:
+                return
+            controller = self._route_notes_controller()
+            reorder = getattr(controller, "reorder_route_notes_point", None)
+            if callable(reorder) and reorder(route_id, point_index, target):
+                self.clear_route_point_move_undo()
+                self._refresh_route_point_ui()
+            return
 
         route_mgr = self.window.route_mgr
         route = route_mgr.route_for_id(route_id)
@@ -377,6 +438,34 @@ class MapInteractionController:
         drawing = getattr(self.window, "route_drawing_state", None)
         if drawing is not None and drawing.active and route_id == drawing.route_id:
             self.window.route_panel_controller.change_drawing_point_node_type(point_index, global_pos)
+            return
+        if self._has_route_notes_draft(route_id):
+            points = self._route_notes_draft_nodes(route_id) or []
+            if not isinstance(point_index, int) or not (0 <= point_index < len(points)):
+                styled_info(self.window, strings.POINT_NODE_TYPE_FAIL_TITLE, strings.POINT_NODE_TYPE_FAIL_BODY)
+                return
+            point = points[point_index]
+            if not isinstance(point, dict):
+                styled_info(self.window, strings.POINT_NODE_TYPE_FAIL_TITLE, strings.POINT_NODE_TYPE_FAIL_BODY)
+                return
+            current = normalize_node_type(point.get("node_type"))
+            controller = self._route_notes_controller()
+            setter = getattr(controller, "set_route_notes_point_node_type", None)
+
+            def apply_node_type(node_type: str) -> None:
+                normalized = normalize_node_type(node_type)
+                if normalized == current:
+                    return
+                if callable(setter) and setter(route_id, point_index, normalized):
+                    self._refresh_route_point_ui()
+                    toast(self.window, strings.POINT_NODE_TYPE_SUCCESS_FMT.format(name=node_type_label(normalized)))
+
+            self.window._node_type_popup = show_node_type_popup(
+                self.window.map_view,
+                global_pos,
+                current,
+                apply_node_type,
+            )
             return
 
         route_mgr = self.window.route_mgr
@@ -419,6 +508,37 @@ class MapInteractionController:
         if drawing is not None and drawing.active and route_id == drawing.route_id:
             self.window.route_panel_controller.change_drawing_point_annotation(point_index)
             return
+        if self._has_route_notes_draft(route_id):
+            route_mgr = self.window.route_mgr
+            items = route_mgr.annotation_type_items()
+            if not items:
+                styled_info(
+                    self.window,
+                    strings.ANNOTATION_TYPE_PICKER_TITLE,
+                    strings.ANNOTATION_TYPE_PICKER_EMPTY,
+                )
+                return
+            points = self._route_notes_draft_nodes(route_id) or []
+            current_type_id = ""
+            if isinstance(point_index, int) and 0 <= point_index < len(points) and isinstance(points[point_index], dict):
+                current_type_id = str(points[point_index].get("typeId") or "")
+            selected = open_annotation_type_picker(self.window, items, current_type_id)
+            if selected is None:
+                return
+            type_id = str(selected.get("typeId") or "")
+            type_name = str(selected.get("type") or type_id)
+            controller = self._route_notes_controller()
+            setter = getattr(controller, "set_route_notes_point_annotation", None)
+            if not callable(setter) or not setter(route_id, point_index, type_id, type_name):
+                styled_info(
+                    self.window,
+                    strings.POINT_ANNOTATION_FAIL_TITLE,
+                    strings.POINT_ANNOTATION_FAIL_BODY,
+                )
+                return
+            toast(self.window, strings.POINT_ANNOTATION_SUCCESS_FMT.format(name=type_name))
+            self._refresh_route_point_ui()
+            return
 
         route_mgr = self.window.route_mgr
         items = route_mgr.annotation_type_items()
@@ -459,6 +579,19 @@ class MapInteractionController:
         drawing = getattr(self.window, "route_drawing_state", None)
         if drawing is not None and drawing.active and route_id == drawing.route_id:
             self.window.route_panel_controller.clear_drawing_point_annotation(point_index)
+            return
+        if self._has_route_notes_draft(route_id):
+            controller = self._route_notes_controller()
+            clearer = getattr(controller, "clear_route_notes_point_annotation", None)
+            if not callable(clearer) or not clearer(route_id, point_index):
+                styled_info(
+                    self.window,
+                    strings.POINT_ANNOTATION_FAIL_TITLE,
+                    strings.POINT_ANNOTATION_DELETE_FAIL_BODY,
+                )
+                return
+            toast(self.window, strings.POINT_ANNOTATION_DELETE_SUCCESS)
+            self._refresh_route_point_ui()
             return
 
         if not self.window.route_mgr.clear_point_annotation(route_id, point_index):
@@ -517,8 +650,28 @@ class MapInteractionController:
         if not confirmed:
             return
 
+        draft_ok_count = 0
+        for route_id, indexes in list(normalized.items()):
+            if not self._has_route_notes_draft(route_id):
+                continue
+            controller = self._route_notes_controller()
+            deleter = getattr(controller, "delete_route_notes_points", None)
+            if callable(deleter):
+                count = int(deleter(route_id, indexes) or 0)
+                draft_ok_count += count
+            normalized.pop(route_id, None)
+
+        if draft_ok_count and not normalized:
+            if draft_ok_count != requested:
+                toast(self.window, strings.DELETE_POINT_PARTIAL_FMT.format(ok=draft_ok_count, fail=requested - draft_ok_count))
+            else:
+                toast(self.window, strings.DELETE_POINT_SUCCESS_FMT.format(count=draft_ok_count))
+            self.clear_route_point_move_undo()
+            self._refresh_route_point_ui()
+            return
+
         outcomes = route_mgr.delete_points_from_routes(normalized)
-        ok_count = sum(len(v) for v in outcomes.values())
+        ok_count = draft_ok_count + sum(len(v) for v in outcomes.values())
         fail_count = requested - ok_count
 
         if ok_count == 0:
@@ -622,11 +775,73 @@ class MapInteractionController:
             if not confirmed:
                 return
 
+        draft_success: dict[str, int | None] = {}
+        persist_ids: list[str] = []
+        for rid in selected_ids:
+            if not self._has_route_notes_draft(rid):
+                persist_ids.append(rid)
+                continue
+            nodes = self._route_notes_draft_nodes(rid) or []
+            try:
+                resource_x, resource_y = x, y
+                adapter = self._coordinate_adapter()
+                if adapter is not None:
+                    resource_x, resource_y = adapter.to_internal(float(x), float(y))
+            except Exception:
+                resource_x, resource_y = x, y
+            new_point = {
+                "id": route_mgr.new_route_point_id(),
+                "x": int(round(float(resource_x))),
+                "y": int(round(float(resource_y))),
+                "node_type": "collect",
+                "visited": False,
+            }
+            if isinstance(point_fields, dict):
+                for key in ("label", "type", "typeId", "radius", "sourceId", "manual", "node_type"):
+                    if key in point_fields:
+                        new_point[key] = point_fields[key]
+            target = overrides.get(rid)
+            if target is None:
+                try:
+                    target = route_mgr.suggest_insertion_index(rid, x, y, coord_adapter=self._coordinate_adapter())
+                except TypeError:
+                    target = route_mgr.suggest_insertion_index(rid, x, y)
+            try:
+                target = int(target if target is not None else len(nodes))
+            except (TypeError, ValueError):
+                target = len(nodes)
+            target = max(0, min(len(nodes), target))
+            nodes.insert(target, new_point)
+            controller = self._route_notes_controller()
+            updater = getattr(controller, "update_route_notes_draft_nodes", None)
+            if callable(updater) and updater(rid, nodes):
+                draft_success[rid] = target
+            else:
+                draft_success[rid] = None
+
+        if draft_success and not persist_ids:
+            ok_count = sum(1 for value in draft_success.values() if value is not None)
+            fail_count = len(draft_success) - ok_count
+            if ok_count == 0:
+                styled_info(
+                    self.window,
+                    strings.INSERT_POINT_FAIL_TITLE,
+                    strings.INSERT_POINT_FAIL_BODY,
+                )
+                return
+            if fail_count > 0:
+                toast(self.window, strings.INSERT_POINT_PARTIAL_FMT.format(ok=ok_count, fail=fail_count))
+            else:
+                toast(self.window, strings.INSERT_POINT_SUCCESS_FMT.format(count=ok_count))
+            self.clear_route_point_move_undo()
+            self._refresh_route_point_ui()
+            return
+
         try:
             outcomes = route_mgr.insert_point_into_routes(
                 x,
                 y,
-                selected_ids,
+                persist_ids if draft_success else selected_ids,
                 overrides,
                 point_fields=point_fields,
                 coord_adapter=self._coordinate_adapter(),
@@ -635,10 +850,12 @@ class MapInteractionController:
             outcomes = route_mgr.insert_point_into_routes(
                 x,
                 y,
-                selected_ids,
+                persist_ids if draft_success else selected_ids,
                 overrides,
                 point_fields=point_fields,
             )
+        if draft_success:
+            outcomes.update(draft_success)
         ok_count = sum(1 for v in outcomes.values() if v is not None)
         fail_count = len(outcomes) - ok_count
 

@@ -28,7 +28,7 @@ from ..dialogs import StyledDialogBase, center_dialog, toast
 from ..dialogs.annotation_type_picker import open_annotation_type_picker
 from ..dialogs.insert_point_dialog import open_insert_point_dialog
 from ..dialogs.point_order_dialog import open_point_order_dialog
-from ..dialogs.route_notes_dialog import edit_route_notes
+from ..dialogs.route_notes_dialog import RouteNodeEditorPanel, RouteNotesDialog, edit_route_notes, route_color_to_hex
 from ..dialogs.settings_dialog import styled_confirm, styled_info
 from ..dialogs.text_input_dialog import prompt_text_input
 from ..widgets import ElidedCheckBox, RouteListItem, RouteSection, TrackedRouteItem
@@ -51,6 +51,7 @@ class RoutePanelController:
     def __init__(self, window) -> None:
         self.window = window
         self.state = window.route_panel_state
+        self._route_notes_session: dict | None = None
 
     @staticmethod
     def matches_route(route_name: str, term: str) -> bool:
@@ -371,6 +372,9 @@ QCheckBox::indicator:checked:hover {{
             toolbar = getattr(self.window, "route_drawing_toolbar", None)
             if toolbar is not None:
                 toolbar.hide()
+            node_panel = getattr(self.window, "route_drawing_node_panel", None)
+            if node_panel is not None:
+                node_panel.set_nodes([])
             help_btn = getattr(self.window, "route_drawing_help_btn", None)
             if help_btn is not None:
                 help_btn.hide()
@@ -391,9 +395,33 @@ QCheckBox::indicator:checked:hover {{
         toolbar.setAttribute(Qt.WA_StyledBackground, True)
         toolbar.setStyleSheet(theme.ISLAND_QSS)
         toolbar.hide()
-        layout = QVBoxLayout(toolbar)
+        layout = QHBoxLayout(toolbar)
         layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
+        layout.setSpacing(8)
+
+        node_panel = RouteNodeEditorPanel(
+            toolbar,
+            route_color_hex="#1ad1ff",
+            annotation_items_provider=self.window.route_mgr.annotation_type_items,
+            annotation_icon_path_provider=self.window.route_mgr.point_icon_path_for,
+            annotation_picker_placement="right_of",
+            annotation_picker_anchor=toolbar,
+        )
+        node_panel.setObjectName("RouteDrawingNodeEditorPanel")
+        node_panel.setMinimumWidth(300)
+        node_panel.setMaximumWidth(380)
+        node_panel.node_order_changed.connect(self.reorder_drawing_point)
+        node_panel.node_annotation_changed.connect(self._on_drawing_node_panel_annotation_changed)
+        node_panel.node_label_changed.connect(self._on_drawing_node_panel_label_changed)
+        node_panel.node_label_edit_committed.connect(self._on_drawing_node_panel_label_committed)
+        layout.addWidget(node_panel, stretch=1)
+
+        controls = QWidget(toolbar)
+        controls.setObjectName("RouteDrawingToolbarControls")
+        controls_layout = QVBoxLayout(controls)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(6)
+        layout.addWidget(controls)
 
         end_btn = self._drawing_toolbar_button(strings.ROUTE_DRAWING_END)
         save_btn = self._drawing_toolbar_button(strings.ROUTE_DRAWING_SAVE)
@@ -410,9 +438,9 @@ QCheckBox::indicator:checked:hover {{
             lambda checked=False: self.set_route_drawing_hide_other_routes(bool(checked))
         )
         for button in (end_btn, save_btn, pause_btn, undo_btn, clear_btn, hide_routes_btn):
-            layout.addWidget(button)
+            controls_layout.addWidget(button)
 
-        layout.addWidget(self._drawing_toolbar_separator())
+        controls_layout.addWidget(self._drawing_toolbar_separator())
 
         type_group = QButtonGroup(toolbar)
         type_group.setExclusive(True)
@@ -426,31 +454,32 @@ QCheckBox::indicator:checked:hover {{
         ):
             type_group.addButton(button)
             button.clicked.connect(lambda _checked=False, value=node_type: self.set_route_drawing_node_type(value))
-            layout.addWidget(button)
+            controls_layout.addWidget(button)
 
-        layout.addWidget(self._drawing_toolbar_separator())
+        controls_layout.addWidget(self._drawing_toolbar_separator())
 
         insert_at_end_check = QCheckBox(strings.ROUTE_DRAWING_INSERT_AT_END)
         insert_at_end_check.toggled.connect(self.set_route_drawing_insert_at_end)
-        layout.addWidget(insert_at_end_check)
+        controls_layout.addWidget(insert_at_end_check)
 
         loop_check = QCheckBox(strings.ROUTE_DRAWING_LOOP)
         loop_check.toggled.connect(self.set_route_drawing_loop)
-        layout.addWidget(loop_check)
+        controls_layout.addWidget(loop_check)
 
         add_annotation_check = QCheckBox(strings.ROUTE_DRAWING_ADD_ANNOTATION)
         add_annotation_check.toggled.connect(self.set_route_drawing_add_annotation)
-        layout.addWidget(add_annotation_check)
+        controls_layout.addWidget(add_annotation_check)
 
         same_annotation_check = QCheckBox(strings.ROUTE_DRAWING_SAME_ANNOTATION_TYPE)
         same_annotation_check.toggled.connect(self.set_route_drawing_same_annotation)
-        layout.addWidget(same_annotation_check)
+        controls_layout.addWidget(same_annotation_check)
 
         select_annotation_btn = self._drawing_toolbar_button(strings.ROUTE_DRAWING_SELECT_ANNOTATION_TYPE)
         select_annotation_btn.clicked.connect(self.select_route_drawing_annotation_type)
-        layout.addWidget(select_annotation_btn)
+        controls_layout.addWidget(select_annotation_btn)
 
         self.window.route_drawing_toolbar = toolbar
+        self.window.route_drawing_node_panel = node_panel
         self.window.route_drawing_toolbar_buttons = {
             "end": end_btn,
             "save": save_btn,
@@ -488,6 +517,16 @@ QCheckBox::indicator:checked:hover {{
         buttons = getattr(self.window, "route_drawing_toolbar_buttons", {})
         if toolbar is None or not buttons:
             return
+        node_panel = getattr(self.window, "route_drawing_node_panel", None)
+        if node_panel is not None:
+            try:
+                node_panel.set_route_color_hex(route_color_to_hex(self.window.route_mgr.color_for(state.route_id)))
+            except Exception:
+                pass
+            focus = QApplication.focusWidget()
+            editing_in_panel = focus is not None and node_panel.isAncestorOf(focus)
+            if not editing_in_panel:
+                node_panel.set_nodes(state.draft_points)
 
         buttons["pause"].setText(strings.ROUTE_DRAWING_RESUME if state.paused else strings.ROUTE_DRAWING_PAUSE)
         node_button = buttons.get(state.node_type) or buttons["collect"]
@@ -845,6 +884,16 @@ QCheckBox::indicator:checked:hover {{
             before = deepcopy(action.get("before") or {})
             if 0 <= index < len(state.draft_points) and isinstance(before, dict):
                 state.draft_points[index] = before
+        elif op == "label":
+            index = int(action.get("index", -1))
+            if 0 <= index < len(state.draft_points):
+                point = state.draft_points[index]
+                if isinstance(point, dict):
+                    before = action.get("before", None)
+                    if before is None:
+                        point.pop("label", None)
+                    else:
+                        point["label"] = before
         elif op == "move":
             index = int(action.get("index", -1))
             before = action.get("before") or {}
@@ -1011,6 +1060,99 @@ QCheckBox::indicator:checked:hover {{
         self._mark_drawing_dirty()
         self._sync_route_drawing_ui()
         return True
+
+    def set_drawing_point_label(self, point_index: int, label: object, *, record_undo: bool = True) -> bool:
+        state = self.window.route_drawing_state
+        if not state.active or not isinstance(point_index, int) or not (0 <= point_index < len(state.draft_points)):
+            return False
+        point = state.draft_points[point_index]
+        if not isinstance(point, dict):
+            return False
+        before = point.get("label", None)
+        text = str(label or "").strip()
+        if text:
+            point["label"] = text
+        else:
+            point.pop("label", None)
+        after = point.get("label", None)
+        if before == after:
+            return False
+        if record_undo:
+            state.undo_stack.append({
+                "op": "label",
+                "index": point_index,
+                "before": before,
+                "after": after,
+            })
+        self._mark_drawing_dirty()
+        self._sync_route_drawing_ui()
+        return True
+
+    def _on_drawing_node_panel_label_changed(self, point_index: int, _before: object, after: object) -> None:
+        state = self.window.route_drawing_state
+        if not state.active or not isinstance(point_index, int) or not (0 <= point_index < len(state.draft_points)):
+            return
+        point = state.draft_points[point_index]
+        if not isinstance(point, dict):
+            return
+        text = str(after or "").strip()
+        if text:
+            point["label"] = text
+        else:
+            point.pop("label", None)
+        self._mark_drawing_dirty()
+        context = {
+            "active": True,
+            "paused": state.paused,
+            "route_id": state.route_id,
+            "name": state.name,
+            "points": deepcopy(state.draft_points),
+            "node_type": state.node_type,
+            "insert_at_end": state.insert_at_end,
+            "add_node_annotation": state.add_node_annotation,
+            "same_annotation_type": state.same_annotation_type,
+            "annotation_type": state.annotation_type,
+            "annotation_type_id": state.annotation_type_id,
+            "hide_other_routes": state.hide_other_routes,
+            "loop": state.loop,
+        }
+        try:
+            self.window.map_view.set_route_drawing_context(context)
+        except Exception:
+            pass
+
+    def _on_drawing_node_panel_label_committed(self, point_index: int, before: object, after: object) -> None:
+        state = self.window.route_drawing_state
+        if not state.active or not isinstance(point_index, int) or not (0 <= point_index < len(state.draft_points)):
+            return
+        if before == after:
+            return
+        state.undo_stack.append({
+            "op": "label",
+            "index": point_index,
+            "before": before,
+            "after": after,
+        })
+        self._mark_drawing_dirty()
+        self._sync_route_drawing_ui()
+
+    def _on_drawing_node_panel_annotation_changed(self, point_index: int, before: object, after: object) -> None:
+        state = self.window.route_drawing_state
+        if not state.active or not isinstance(point_index, int) or not (0 <= point_index < len(state.draft_points)):
+            return
+        if not isinstance(after, dict):
+            return
+        if isinstance(before, dict) and before == after:
+            return
+        state.draft_points[point_index] = dict(after)
+        state.undo_stack.append({
+            "op": "annotation",
+            "index": point_index,
+            "before": deepcopy(before) if isinstance(before, dict) else before,
+            "after": deepcopy(after),
+        })
+        self._mark_drawing_dirty()
+        self._sync_route_drawing_ui()
 
     def change_drawing_point_order(self, point_index: int) -> None:
         state = self.window.route_drawing_state
@@ -1336,31 +1478,355 @@ QCheckBox::indicator:checked:hover {{
             None,
         )
         route_id = self.window.route_mgr.route_id(route) if route is not None else ""
+        if route is None or not route_id:
+            styled_info(self.window, strings.ROUTE_NOTES_TITLE, strings.ROUTE_NOTES_SAVE_FAILED.format(name=name))
+            return
         current_notes = self.window.route_mgr.get_route_notes(category, name)
         current_color = self.window.route_mgr.route_color_override(route_id) or None
         route_color = self.window.route_mgr.color_for(route_id) if route_id else (255, 209, 26)
         nodes = self._route_notes_nodes(route)
-        result = edit_route_notes(
-            self.window,
+        if not isinstance(self.window, QWidget):
+            result = edit_route_notes(
+                None,
+                name,
+                current_notes,
+                route_color,
+                current_color,
+                nodes,
+            )
+            accepted, notes, color = result[:3]
+            nodes_changed = bool(result[3]) if len(result) > 3 else False
+            edited_nodes = result[4] if len(result) > 4 else nodes
+            notes_changed = notes != current_notes or color != current_color
+            if not accepted or (not notes_changed and not nodes_changed):
+                return
+            if notes_changed and not self.window.route_mgr.update_route_notes_and_color(category, name, notes, color):
+                styled_info(self.window, strings.ROUTE_NOTES_TITLE, strings.ROUTE_NOTES_SAVE_FAILED.format(name=name))
+                return
+            if nodes_changed and not self.window.route_mgr.save_route_points(route_id, edited_nodes):
+                styled_info(self.window, strings.ROUTE_NOTES_TITLE, strings.ROUTE_NOTES_SAVE_FAILED.format(name=name))
+                return
+            self._route_notes_refresh_preview()
+            toast(self.window, strings.ROUTE_NOTES_SAVED.format(name=name))
+            return
+
+        session = getattr(self, "_route_notes_session", None)
+        if isinstance(session, dict):
+            dialog = session.get("dialog")
+            if session.get("route_id") == route_id and dialog is not None:
+                try:
+                    dialog.show()
+                    dialog.raise_()
+                    dialog.activateWindow()
+                except Exception:
+                    pass
+                return
+            if not self._discard_route_notes_session(prompt=True):
+                return
+        dialog_parent = self.window if isinstance(self.window, QWidget) else None
+        dialog = RouteNotesDialog(
+            dialog_parent,
             name,
             current_notes,
             route_color,
             current_color,
             nodes,
+            modal=False,
         )
-        accepted, notes, color = result[:3]
-        if not accepted or (
-            notes == current_notes
-            and color == current_color
-        ):
-            return
-        saved = self.window.route_mgr.update_route_notes_and_color(category, name, notes, color)
-        if not saved:
-            styled_info(self.window, strings.ROUTE_NOTES_TITLE, strings.ROUTE_NOTES_SAVE_FAILED.format(name=name))
-            return
+        center_dialog(dialog, self.window)
+        self._route_notes_session = {
+            "route_id": route_id,
+            "category": category,
+            "name": name,
+            "route": route,
+            "dialog": dialog,
+            "original_notes": current_notes,
+            "original_color": current_color,
+            "original_had_color": "color" in route,
+            "original_color_value": route.get("color"),
+            "original_had_notes": "notes" in route,
+            "original_notes_value": route.get("notes"),
+            "original_points": deepcopy(route.get("points", []) or []),
+            "original_draft_nodes": dialog.draft_nodes(),
+        }
+        dialog.nodes_changed_signal.connect(lambda rid=route_id: self._on_route_notes_nodes_changed(rid))
+        dialog.color_preview_changed.connect(lambda _color, rid=route_id: self._on_route_notes_color_changed(rid))
+        dialog.confirm_requested.connect(self._confirm_route_notes_session)
+        dialog.cancel_requested.connect(lambda: self._discard_route_notes_session(prompt=True))
+        dialog.show()
+        dialog.raise_()
+
+    def _route_notes_refresh_preview(self) -> None:
         self.refresh_route_checkbox_colors()
-        self.window.map_view._refresh_from_last_frame()
+        try:
+            self.window.map_view._refresh_from_last_frame()
+        except Exception:
+            pass
+        try:
+            self.refresh_tracked_routes()
+        except Exception:
+            pass
+
+    def _route_notes_session_dirty(self, session: dict | None = None) -> bool:
+        session = session if isinstance(session, dict) else getattr(self, "_route_notes_session", None)
+        if not isinstance(session, dict):
+            return False
+        dialog = session.get("dialog")
+        if dialog is None:
+            return False
+        return (
+            dialog.notes_text() != session.get("original_notes", "")
+            or dialog.color_override() != session.get("original_color")
+            or dialog.draft_nodes() != session.get("original_draft_nodes", [])
+        )
+
+    def _route_notes_nodes_changed_for_save(self, session: dict) -> bool:
+        dialog = session.get("dialog")
+        if dialog is None:
+            return False
+        return dialog.nodes() != session.get("original_points", [])
+
+    def _apply_route_notes_preview(self, *, nodes: list[dict] | None = None, color: str | None | object = ...) -> None:
+        session = getattr(self, "_route_notes_session", None)
+        if not isinstance(session, dict):
+            return
+        route = self.window.route_mgr.route_for_id(str(session.get("route_id") or ""))
+        if route is None:
+            return
+        dialog = session.get("dialog")
+        if nodes is None and dialog is not None:
+            nodes = dialog.draft_nodes()
+        if nodes is not None:
+            route["points"] = [dict(point) for point in nodes if isinstance(point, dict)]
+        if color is ... and dialog is not None:
+            color = dialog.color_override()
+        if color is not ...:
+            if color is None:
+                route.pop("color", None)
+            else:
+                route["color"] = color
+        self._route_notes_refresh_preview()
+
+    def _on_route_notes_nodes_changed(self, route_id: str) -> None:
+        if not self.has_active_route_notes_draft(route_id):
+            return
+        self._apply_route_notes_preview()
+
+    def _on_route_notes_color_changed(self, route_id: str) -> None:
+        if not self.has_active_route_notes_draft(route_id):
+            return
+        self._apply_route_notes_preview()
+
+    def _restore_route_notes_session(self, session: dict | None = None) -> None:
+        session = session if isinstance(session, dict) else getattr(self, "_route_notes_session", None)
+        if not isinstance(session, dict):
+            return
+        route = self.window.route_mgr.route_for_id(str(session.get("route_id") or ""))
+        if route is None:
+            return
+        route["points"] = deepcopy(session.get("original_points", []))
+        if session.get("original_had_color"):
+            route["color"] = session.get("original_color_value")
+        else:
+            route.pop("color", None)
+        if session.get("original_had_notes"):
+            route["notes"] = session.get("original_notes_value")
+        else:
+            route.pop("notes", None)
+        self._route_notes_refresh_preview()
+
+    def _discard_route_notes_session(self, *, prompt: bool) -> bool:
+        session = getattr(self, "_route_notes_session", None)
+        if not isinstance(session, dict):
+            return True
+        if prompt and self._route_notes_session_dirty(session):
+            confirmed = styled_confirm(
+                self.window,
+                getattr(strings, "ROUTE_NOTES_DISCARD_TITLE", strings.ROUTE_NOTES_TITLE),
+                getattr(strings, "ROUTE_NOTES_DISCARD_BODY", "Discard route detail changes?"),
+                confirm_text=getattr(strings, "ROUTE_NOTES_DISCARD_CONFIRM", strings.ROUTE_DRAWING_EXIT_DISCARD),
+                cancel_text=strings.ROUTE_DRAWING_EXIT_CANCEL,
+            )
+            if not confirmed:
+                return False
+        self._restore_route_notes_session(session)
+        dialog = session.get("dialog")
+        self._route_notes_session = None
+        if dialog is not None:
+            try:
+                dialog.force_close(False)
+            except Exception:
+                pass
+        return True
+
+    def _confirm_route_notes_session(self) -> bool:
+        session = getattr(self, "_route_notes_session", None)
+        if not isinstance(session, dict):
+            return True
+        dialog = session.get("dialog")
+        if dialog is None:
+            self._route_notes_session = None
+            return True
+
+        category = str(session.get("category") or "")
+        name = str(session.get("name") or "")
+        route_id = str(session.get("route_id") or "")
+        notes = dialog.notes_text()
+        color = dialog.color_override()
+        edited_nodes = dialog.nodes()
+        notes_changed = notes != session.get("original_notes", "") or color != session.get("original_color")
+        nodes_changed = edited_nodes != session.get("original_points", [])
+        if not notes_changed and not nodes_changed:
+            self._route_notes_session = None
+            dialog.force_close(True)
+            return True
+
+        if notes_changed and not self.window.route_mgr.update_route_notes_and_color(category, name, notes, color):
+            styled_info(self.window, strings.ROUTE_NOTES_TITLE, strings.ROUTE_NOTES_SAVE_FAILED.format(name=name))
+            self._apply_route_notes_preview()
+            return False
+        if nodes_changed and not self.window.route_mgr.save_route_points(route_id, edited_nodes):
+            styled_info(self.window, strings.ROUTE_NOTES_TITLE, strings.ROUTE_NOTES_SAVE_FAILED.format(name=name))
+            self._apply_route_notes_preview(nodes=edited_nodes)
+            return False
+
+        self._route_notes_session = None
+        self._route_notes_refresh_preview()
+        dialog.force_close(True)
         toast(self.window, strings.ROUTE_NOTES_SAVED.format(name=name))
+        return True
+
+    def has_active_route_notes_draft(self, route_id: str) -> bool:
+        session = getattr(self, "_route_notes_session", None)
+        return isinstance(session, dict) and str(session.get("route_id") or "") == str(route_id or "")
+
+    def route_notes_draft_nodes(self, route_id: str) -> list[dict] | None:
+        if not self.has_active_route_notes_draft(route_id):
+            return None
+        session = getattr(self, "_route_notes_session", None)
+        dialog = session.get("dialog") if isinstance(session, dict) else None
+        if dialog is None:
+            return None
+        return dialog.draft_nodes()
+
+    def update_route_notes_draft_nodes(self, route_id: str, nodes: list[dict], *, refresh: bool = True) -> bool:
+        if not self.has_active_route_notes_draft(route_id):
+            return False
+        session = getattr(self, "_route_notes_session", None)
+        dialog = session.get("dialog") if isinstance(session, dict) else None
+        if dialog is None:
+            return False
+        clean_nodes = [dict(point) for point in nodes if isinstance(point, dict)]
+        dialog.set_nodes(clean_nodes, refresh=refresh)
+        self._apply_route_notes_preview(nodes=clean_nodes)
+        return True
+
+    def _route_note_resource_xy(self, x: int | float, y: int | float, coord_adapter=None) -> tuple[int, int]:
+        try:
+            adapter = coord_adapter
+            if adapter is None:
+                getter = getattr(getattr(self.window, "map_view", None), "coordinate_adapter", None)
+                adapter = getter() if callable(getter) else None
+            if adapter is None:
+                return int(round(float(x))), int(round(float(y)))
+            tx, ty = adapter.to_internal(float(x), float(y))
+            return int(round(tx)), int(round(ty))
+        except Exception:
+            return int(x), int(y)
+
+    def move_route_notes_point(
+        self,
+        route_id: str,
+        point_index: int,
+        x: int | float,
+        y: int | float,
+        *,
+        coord_adapter=None,
+        refresh_panel: bool = False,
+    ) -> bool:
+        nodes = self.route_notes_draft_nodes(route_id)
+        if nodes is None or not isinstance(point_index, int) or not (0 <= point_index < len(nodes)):
+            return False
+        point = nodes[point_index]
+        if not isinstance(point, dict):
+            return False
+        next_x, next_y = self._route_note_resource_xy(x, y, coord_adapter=coord_adapter)
+        point["x"] = next_x
+        point["y"] = next_y
+        return self.update_route_notes_draft_nodes(route_id, nodes, refresh=refresh_panel)
+
+    def reorder_route_notes_point(self, route_id: str, from_index: int, to_index: int) -> bool:
+        nodes = self.route_notes_draft_nodes(route_id)
+        if nodes is None or not isinstance(from_index, int) or not (0 <= from_index < len(nodes)):
+            return False
+        try:
+            target = int(to_index)
+        except (TypeError, ValueError):
+            return False
+        target = max(0, min(len(nodes) - 1, target))
+        if target == from_index:
+            return False
+        point = nodes.pop(from_index)
+        nodes.insert(target, point)
+        return self.update_route_notes_draft_nodes(route_id, nodes)
+
+    def set_route_notes_point_node_type(self, route_id: str, point_index: int, node_type: str) -> bool:
+        nodes = self.route_notes_draft_nodes(route_id)
+        if nodes is None or not isinstance(point_index, int) or not (0 <= point_index < len(nodes)):
+            return False
+        point = nodes[point_index]
+        if not isinstance(point, dict):
+            return False
+        point["node_type"] = normalize_node_type(node_type)
+        return self.update_route_notes_draft_nodes(route_id, nodes)
+
+    def set_route_notes_point_annotation(
+        self,
+        route_id: str,
+        point_index: int,
+        type_id: str,
+        type_name: str,
+    ) -> bool:
+        nodes = self.route_notes_draft_nodes(route_id)
+        if nodes is None or not isinstance(point_index, int) or not (0 <= point_index < len(nodes)):
+            return False
+        point = nodes[point_index]
+        if not isinstance(point, dict):
+            return False
+        type_id = str(type_id or "").strip()
+        if not type_id:
+            return False
+        point["typeId"] = type_id
+        point["type"] = str(type_name or type_id).strip() or type_id
+        icon_path = self.window.route_mgr.point_icon_path_for(type_id)
+        if icon_path:
+            point["icon_path"] = icon_path
+        return self.update_route_notes_draft_nodes(route_id, nodes)
+
+    def clear_route_notes_point_annotation(self, route_id: str, point_index: int) -> bool:
+        nodes = self.route_notes_draft_nodes(route_id)
+        if nodes is None or not isinstance(point_index, int) or not (0 <= point_index < len(nodes)):
+            return False
+        point = nodes[point_index]
+        if not isinstance(point, dict):
+            return False
+        point.pop("typeId", None)
+        point.pop("type", None)
+        point.pop("icon_path", None)
+        return self.update_route_notes_draft_nodes(route_id, nodes)
+
+    def delete_route_notes_points(self, route_id: str, indexes: list[int]) -> int:
+        nodes = self.route_notes_draft_nodes(route_id)
+        if nodes is None:
+            return 0
+        cleaned = sorted({index for index in indexes if isinstance(index, int) and 0 <= index < len(nodes)}, reverse=True)
+        if not cleaned:
+            return 0
+        for index in cleaned:
+            nodes.pop(index)
+        if not self.update_route_notes_draft_nodes(route_id, nodes):
+            return 0
+        return len(cleaned)
 
     def _route_notes_nodes(self, route: dict | None) -> list[dict]:
         if route is None:

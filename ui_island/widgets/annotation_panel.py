@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..design import strings, theme
-from ..services.annotation_preferences import normalize_type_ids
+from ..services.annotation_preferences import normalize_annotation_presets, normalize_type_ids
 from .annotation_type_widgets import AnnotationGroupSection, build_annotation_type_button, group_annotation_types
 from .context_menu import ContextMenuItem, show_context_menu
 from .factory import make_scroll_area
@@ -26,6 +26,9 @@ from .factory import make_scroll_area
 
 class AnnotationPanel(QFrame):
     selection_changed = Signal(list)
+    preset_create_requested = Signal()
+    preset_edit_requested = Signal(str)
+    preset_delete_requested = Signal(str)
     plan_route_requested = Signal(str, str)
     panel_hidden = Signal()
 
@@ -39,6 +42,7 @@ class AnnotationPanel(QFrame):
         self.setStyleSheet(theme.ISLAND_QSS)
         self._types: list[dict] = []
         self._selected_type_ids: list[str] = []
+        self._presets: list[dict] = []
         self._group_expanded: dict[str, bool] = {}
         self._group_expanded_changed: Callable[[dict[str, bool]], None] | None = None
         self._dragging = False
@@ -103,6 +107,11 @@ class AnnotationPanel(QFrame):
         root.addWidget(self._scroll)
 
     def load_index(self, path: str | Path) -> None:
+        if not path:
+            self._types = []
+            self._message.setText("未选择标注文件，请在设置中选择或拉取标注数据")
+            self._render()
+            return
         index_path = Path(path)
         if not index_path.exists():
             self._types = []
@@ -123,6 +132,10 @@ class AnnotationPanel(QFrame):
 
     def set_preferences(self, selected_type_ids: list[str]) -> None:
         self._selected_type_ids = normalize_type_ids(selected_type_ids)
+        self._render()
+
+    def set_presets(self, presets: list[dict]) -> None:
+        self._presets = normalize_annotation_presets(presets)
         self._render()
 
     def set_group_expanded_state(
@@ -185,7 +198,60 @@ class AnnotationPanel(QFrame):
             parent=self._inner,
         )
         custom_section.expanded_changed.connect(self._set_group_expanded)
+        if custom_section.add_btn is not None:
+            custom_section.add_btn.clicked.connect(lambda _checked=False: self.preset_create_requested.emit())
+        self._add_preset_rows(custom_section, selected)
         self._list_layout.addWidget(custom_section)
+
+    def _add_preset_rows(self, parent_section: AnnotationGroupSection, selected: set[str]) -> None:
+        for index, preset in enumerate(self._presets):
+            row = self._build_preset_row(preset, selected)
+            parent_section.add_row(row, index)
+
+    def _build_preset_row(self, preset: dict, selected: set[str]) -> QWidget:
+        preset_id = str(preset.get("id") or "")
+        preset_name = str(preset.get("name") or preset_id)
+        type_ids = normalize_type_ids(preset.get("type_ids"))
+
+        row = QWidget(parent=self._inner)
+        row.setObjectName("AnnotationPresetRow")
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(6)
+
+        name_btn = QPushButton(preset_name, row)
+        name_btn.setObjectName("AnnotationPresetNameButton")
+        name_btn.setProperty("selected", bool(type_ids and all(type_id in selected for type_id in type_ids)))
+        name_btn.setToolTip(f"{preset_name}：{len(type_ids)} 个标注类型")
+        name_btn.clicked.connect(lambda _checked=False, tids=type_ids: self._toggle_preset_types(tids))
+        row_layout.addWidget(name_btn, stretch=1)
+
+        select_all_btn = self._build_preset_action_button("全选", "显示此预设内所有标注", row)
+        select_all_btn.clicked.connect(lambda _checked=False, tids=type_ids: self._select_preset_types(tids))
+        row_layout.addWidget(select_all_btn)
+
+        invert_btn = self._build_preset_action_button("反选", "反转此预设内标注显示状态", row)
+        invert_btn.clicked.connect(lambda _checked=False, tids=type_ids: self._invert_preset_types(tids))
+        row_layout.addWidget(invert_btn)
+
+        edit_btn = self._build_preset_action_button("修改", "修改此预设方案", row)
+        edit_btn.clicked.connect(lambda _checked=False, pid=preset_id: self.preset_edit_requested.emit(pid))
+        row_layout.addWidget(edit_btn)
+
+        delete_btn = self._build_preset_action_button("删除", "删除此预设方案", row)
+        delete_btn.setProperty("danger", True)
+        delete_btn.clicked.connect(lambda _checked=False, pid=preset_id: self.preset_delete_requested.emit(pid))
+        row_layout.addWidget(delete_btn)
+        return row
+
+    @staticmethod
+    def _build_preset_action_button(text: str, tooltip: str, parent: QWidget) -> QPushButton:
+        button = QPushButton(text, parent)
+        button.setObjectName("AnnotationPresetActionButton")
+        button.setToolTip(tooltip)
+        button.setFixedWidth(42)
+        button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        return button
 
     def _add_grouped_type_sections(self, parent_section: AnnotationGroupSection, selected: set[str]) -> None:
         for index, (group_name, group_items) in enumerate(group_annotation_types(self._visible_types())):
@@ -282,6 +348,48 @@ class AnnotationPanel(QFrame):
         self._selected_type_ids = selected
         self._render()
         self.selection_changed.emit(selected)
+
+    def _available_type_id_set(self) -> set[str]:
+        return {str(item.get("typeId") or "") for item in self._types if str(item.get("typeId") or "")}
+
+    def _preset_available_type_ids(self, type_ids: list[str]) -> list[str]:
+        available = self._available_type_id_set()
+        return [type_id for type_id in normalize_type_ids(type_ids) if type_id in available]
+
+    def _emit_preset_selection(self, selected: list[str]) -> None:
+        selected = normalize_type_ids(selected)
+        if selected == self._selected_type_ids:
+            return
+        self._selected_type_ids = selected
+        self._render()
+        self.selection_changed.emit(selected)
+
+    def _toggle_preset_types(self, type_ids: list[str]) -> None:
+        preset_ids = self._preset_available_type_ids(type_ids)
+        if not preset_ids:
+            return
+        selected_set = set(normalize_type_ids(self._selected_type_ids))
+        if all(type_id in selected_set for type_id in preset_ids):
+            selected = [type_id for type_id in self._selected_type_ids if type_id not in set(preset_ids)]
+        else:
+            selected = [*self._selected_type_ids, *preset_ids]
+        self._emit_preset_selection(selected)
+
+    def _select_preset_types(self, type_ids: list[str]) -> None:
+        preset_ids = self._preset_available_type_ids(type_ids)
+        if not preset_ids:
+            return
+        self._emit_preset_selection([*self._selected_type_ids, *preset_ids])
+
+    def _invert_preset_types(self, type_ids: list[str]) -> None:
+        preset_ids = self._preset_available_type_ids(type_ids)
+        if not preset_ids:
+            return
+        preset_set = set(preset_ids)
+        selected_set = set(normalize_type_ids(self._selected_type_ids))
+        selected = [type_id for type_id in self._selected_type_ids if type_id not in preset_set]
+        selected.extend(type_id for type_id in preset_ids if type_id not in selected_set)
+        self._emit_preset_selection(selected)
 
     def _select_all_types(self) -> None:
         self._selected_type_ids = normalize_type_ids([item.get("typeId") for item in self._types])

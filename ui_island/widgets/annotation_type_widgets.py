@@ -7,7 +7,7 @@ from pathlib import Path
 import config
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QIcon, QPainter, QPixmap
-from PySide6.QtWidgets import QGridLayout, QPushButton, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 
 class AnnotationGroupSection(QWidget):
@@ -39,13 +39,40 @@ class AnnotationGroupSection(QWidget):
             layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
 
-        self.header = QPushButton(self)
-        self.header.setObjectName("SectionHeader")
-        self.header.setProperty("compact", True)
-        if self._annotation_layer:
+        if self._annotation_layer == "custom":
+            self.header = QPushButton(self)
+            self.header.setObjectName("SectionHeader")
+            self.header.setProperty("compact", True)
             self.header.setProperty("annotationLayer", self._annotation_layer)
-        self.header.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.header.clicked.connect(self.toggle_expanded)
+            self.header.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            self.header.clicked.connect(self.toggle_expanded)
+            header_button_layout = QHBoxLayout(self.header)
+            header_button_layout.setContentsMargins(10, 0, 0, 0)
+            header_button_layout.setSpacing(0)
+
+            self.header_label = QLabel(self.header)
+            self.header_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            self.header_label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+            header_button_layout.addWidget(self.header_label, stretch=1)
+
+            self.add_btn = QPushButton("+", self.header)
+            self.add_btn.setObjectName("SectionHeaderAddButton")
+            self.add_btn.setProperty("compact", True)
+            self.add_btn.setProperty("iconRole", "add")
+            self.add_btn.setToolTip("新增标注预设方案")
+            self.add_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+            self.add_btn.setFixedWidth(30)
+            header_button_layout.addWidget(self.add_btn)
+        else:
+            self.header = QPushButton(self)
+            self.header.setObjectName("SectionHeader")
+            self.header.setProperty("compact", True)
+            if self._annotation_layer:
+                self.header.setProperty("annotationLayer", self._annotation_layer)
+            self.header.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            self.header.clicked.connect(self.toggle_expanded)
+            self.header_label = None
+            self.add_btn = None
         layout.addWidget(self.header)
 
         self.body = QWidget(self)
@@ -80,7 +107,12 @@ class AnnotationGroupSection(QWidget):
         return self._expanded
 
     def _sync_state(self) -> None:
-        self.header.setText(f"{'▾' if self._expanded else '▸'} {self.group_name}")
+        title = f"{'▾' if self._expanded else '▸'} {self.group_name}"
+        if self.header_label is not None:
+            self.header.setText("")
+            self.header_label.setText(title)
+        else:
+            self.header.setText(title)
         self.header.setToolTip("收起分类" if self._expanded else "展开分类")
         self.body.setVisible(self._expanded)
         layout = self.layout()

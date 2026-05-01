@@ -22,6 +22,12 @@ debug_minimap.png
 .claude/
 
 
+# SIFT base-map descriptor cache (regenerated automatically on first launch)
+.cache/
+
+# SIFT 调试转储（仅在 GMT_SIFT_DEBUG=1 时产生）
+debug/sift_failures/
+
 # Build outputs
 build/
 dist/

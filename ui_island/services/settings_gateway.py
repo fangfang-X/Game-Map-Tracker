@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import config
 
-from .annotation_preferences import normalize_type_ids
+from .annotation_preferences import normalize_annotation_presets, normalize_type_ids
 
 
 class SettingsGateway:
@@ -60,6 +60,9 @@ class SettingsGateway:
 
     def get_annotation_type_ids(self) -> list[str]:
         return normalize_type_ids(getattr(config, "ANNOTATION_TYPE_IDS", []))
+
+    def get_annotation_presets(self) -> list[dict]:
+        return normalize_annotation_presets(getattr(config, "ANNOTATION_PRESETS", []))
 
     def get_annotation_group_expanded(self) -> dict[str, bool]:
         raw = getattr(config, "ANNOTATION_GROUP_EXPANDED", None)

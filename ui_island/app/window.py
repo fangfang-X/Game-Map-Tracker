@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import threading
 import traceback
+import uuid
 from collections import deque
 from enum import Enum
 
@@ -25,6 +26,7 @@ from ..dialogs.settings_dialog import (
     styled_confirm,
     styled_info,
 )
+from ..dialogs.annotation_preset_dialog import open_annotation_preset_dialog
 from ..services import SettingsGateway, WindowPrefsStore
 from ..services.app_updater import (
     APP_STATUS_DISABLED,
@@ -42,7 +44,7 @@ from ..services.app_updater import (
     should_show_startup_update_prompt,
     start_restart_update,
 )
-from ..services.annotation_preferences import normalize_type_ids
+from ..services.annotation_preferences import annotation_preset_names, normalize_annotation_presets, normalize_type_ids
 from ..services.hotkey_config import hotkey_label, qt_event_matches_hotkey
 from ..state import HotkeyState, RouteDrawingState, RoutePanelState, TrackingState, WindowLayoutPrefs, WindowModeState
 from ..widgets import RestoreIcon
@@ -66,6 +68,7 @@ _STABLE_FAMILY = {WindowMode.TRACKING_STABLE, WindowMode.TRACKING_INERTIAL}
 class IslandWindow(WindowStateBridgeMixin, QWidget):
     _frame_ready = Signal(object)
     _toggle_lock_requested = Signal()
+    _deferred_tracker_finished = Signal(object)
     _annotation_refresh_finished = Signal(int, str, str)
     _startup_update_check_finished = Signal(object)
     _startup_update_install_finished = Signal(object)
@@ -122,6 +125,7 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
         self.route_panel_state.add_category_confirm_btn = None
         self.route_panel_state.add_category_cancel_btn = None
         self.annotation_type_ids = self.window_prefs_store.load_annotation_type_ids()
+        self.annotation_presets = self.window_prefs_store.load_annotation_presets()
         self.annotation_group_expanded = self.window_prefs_store.load_annotation_group_expanded()
         self.route_mgr.set_annotation_type_ids(self.annotation_type_ids)
 
@@ -213,6 +217,8 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
         self._startup_update_install_running = False
         self._startup_force_update_required = False
         self._startup_update_progress_toast = None
+        self._deferred_tracker_loading = False
+        self._deferred_tracker_toast = None
 
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -232,6 +238,7 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
         QTimer.singleShot(0, self._paint_default_map)
 
         self._toggle_lock_requested.connect(self.toggle_lock, Qt.QueuedConnection)
+        self._deferred_tracker_finished.connect(self._on_deferred_tracker_finished, Qt.QueuedConnection)
         self._annotation_refresh_finished.connect(self._on_annotation_refresh_finished, Qt.QueuedConnection)
         self._startup_update_check_finished.connect(self._on_startup_update_check_finished, Qt.QueuedConnection)
         self._startup_update_install_finished.connect(self._on_startup_update_install_finished, Qt.QueuedConnection)
@@ -264,7 +271,11 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
         )
         self.annotation_panel.load_index(config.selected_annotation_path_from_settings())
         self.annotation_panel.set_preferences(self.annotation_type_ids)
+        self.annotation_panel.set_presets(self.annotation_presets)
         self.annotation_panel.selection_changed.connect(self._on_annotation_selection_changed)
+        self.annotation_panel.preset_create_requested.connect(self._on_annotation_preset_create_requested)
+        self.annotation_panel.preset_edit_requested.connect(self._on_annotation_preset_edit_requested)
+        self.annotation_panel.preset_delete_requested.connect(self._on_annotation_preset_delete_requested)
         self.annotation_panel.plan_route_requested.connect(self._on_annotation_plan_route_requested)
         self.annotation_panel.panel_hidden.connect(lambda: self.annotation_toggle_btn.setChecked(False))
 
@@ -276,12 +287,69 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
         QTimer.singleShot(350, self._show_resource_notice)
         QTimer.singleShot(2000, self._start_startup_update_check)
 
+    def start_deferred_tracker_load(self, tracker_factory) -> None:
+        if self._deferred_tracker_loading:
+            return
+        self._deferred_tracker_loading = True
+        self._deferred_tracker_toast = toast_persistent(self, "首次生成地图缓存中，启动会稍慢...")
+
+        def worker() -> None:
+            try:
+                result = tracker_factory()
+            except Exception as exc:
+                result = exc
+            try:
+                self._deferred_tracker_finished.emit(result)
+            except RuntimeError:
+                pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _clear_deferred_tracker_toast(self) -> None:
+        if self._deferred_tracker_toast is None:
+            return
+        try:
+            self._deferred_tracker_toast.dismiss()
+        except RuntimeError:
+            pass
+        self._deferred_tracker_toast = None
+
+    def _on_deferred_tracker_finished(self, result: object) -> None:
+        self._deferred_tracker_loading = False
+        self._clear_deferred_tracker_toast()
+        if not isinstance(result, BaseTracker):
+            error = str(result) if result else ""
+            setattr(self.tracker, "map_available", False)
+            setattr(self.tracker, "error", error)
+            self._set_map_missing_notice(True)
+            styled_info(self, "地图缓存生成失败", f"SIFT 地图缓存生成失败，定位暂不可用。\n\n{error}")
+            return
+
+        self.tracker = result
+        self._apply_tracker_to_map_view()
+        self._frame_ready.emit(TrackResult(TrackState.SEARCHING, latency_ms=0.0))
+
+    def _apply_tracker_to_map_view(self) -> None:
+        try:
+            self.map_view.set_map(self.tracker.logic_map_bgr)
+            self._set_map_missing_notice(not getattr(self.tracker, "map_available", True))
+            self._paint_default_map()
+        except Exception:
+            pass
+
+    def _set_map_missing_notice(self, visible: bool) -> None:
+        set_missing_map_notice_visible = getattr(self.map_view, "set_missing_map_notice_visible", None)
+        if callable(set_missing_map_notice_visible):
+            set_missing_map_notice_visible(bool(visible))
+
     def _show_resource_notice(self) -> None:
         messages: list[str] = []
         if not getattr(self.tracker, "map_available", True):
-            messages.append(f"未找到底图：{getattr(config, 'MAP_FILE', '')}")
-        if not config.selected_annotation_exists():
-            messages.append(f"未找到标注数据文件：{getattr(config, 'ANNOTATION_FILE', '')}")
+            map_file = str(getattr(config, "MAP_FILE", "") or "").strip()
+            messages.append(f"未找到底图：{map_file}" if map_file else "未设置底图")
+        annotation_file = config.selected_annotation_file_from_settings()
+        if annotation_file and not config.selected_annotation_exists():
+            messages.append(f"未找到标注数据文件：{annotation_file}")
         try:
             messages.extend(self.route_mgr.annotation_metadata_warnings())
             messages.extend(self.route_mgr.route_metadata_warnings())
@@ -297,11 +365,13 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
         )
 
     def _show_missing_map_notice(self) -> None:
+        map_file = str(getattr(config, "MAP_FILE", "") or "").strip()
+        detail = f"未找到底图：{map_file}" if map_file else "未设置底图"
         styled_info(
             self,
             "未配置底图",
-            f"未找到底图：{getattr(config, 'MAP_FILE', '')}\n\n"
-            "请把底图文件放入程序根目录的 maps 文件夹，在设置窗口选择后重启。",
+            f"{detail}\n\n"
+            "请把底图文件放入程序根目录的 maps 文件夹目录中，在设置窗口选择后重启。",
         )
 
     def _start_startup_update_check(self) -> None:
@@ -577,9 +647,7 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
 
     def _refresh_updated_resources(self) -> None:
         try:
-            self.route_mgr._annotation_points_cache = None
-            self.route_mgr._point_icon_cache.clear()
-            self.route_mgr._annotation_icon_cache.clear()
+            self.route_mgr.invalidate_annotation_cache(icons=True)
         except Exception:
             pass
         try:
@@ -589,6 +657,7 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
         try:
             self.annotation_panel.load_index(config.selected_annotation_path_from_settings())
             self.annotation_panel.set_preferences(self.annotation_type_ids)
+            self.annotation_panel.set_presets(self.annotation_presets)
         except Exception:
             pass
         try:
@@ -606,6 +675,7 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
             return
         self.annotation_panel.load_index(config.selected_annotation_path_from_settings())
         self.annotation_panel.set_preferences(self.annotation_type_ids)
+        self.annotation_panel.set_presets(self.annotation_presets)
         self._position_annotation_panel()
         self.annotation_panel.show()
         self.annotation_toggle_btn.setChecked(True)
@@ -638,6 +708,63 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
             self.map_view._refresh_from_last_frame()
         except Exception:
             pass
+
+    def _sync_annotation_presets(self, presets: list[dict]) -> None:
+        self.annotation_presets = normalize_annotation_presets(presets)
+        self.window_prefs_store.save_annotation_presets(self.annotation_presets)
+        self.annotation_panel.set_presets(self.annotation_presets)
+
+    def _on_annotation_preset_create_requested(self) -> None:
+        selected = open_annotation_preset_dialog(
+            self,
+            self.route_mgr.annotation_type_items(),
+            existing_names=annotation_preset_names(self.annotation_presets),
+        )
+        if selected is None:
+            return
+        selected["id"] = selected.get("id") or f"preset_{uuid.uuid4().hex}"
+        self._sync_annotation_presets([*self.annotation_presets, selected])
+        toast(self, f"已新增标注预设“{selected['name']}”")
+
+    def _on_annotation_preset_edit_requested(self, preset_id: str) -> None:
+        preset = self._annotation_preset_for_id(preset_id)
+        if preset is None:
+            return
+        selected = open_annotation_preset_dialog(
+            self,
+            self.route_mgr.annotation_type_items(),
+            preset=preset,
+            existing_names=annotation_preset_names(self.annotation_presets, exclude_id=preset_id),
+        )
+        if selected is None:
+            return
+        selected["id"] = preset_id
+        presets = [selected if item.get("id") == preset_id else item for item in self.annotation_presets]
+        self._sync_annotation_presets(presets)
+        toast(self, f"已修改标注预设“{selected['name']}”")
+
+    def _on_annotation_preset_delete_requested(self, preset_id: str) -> None:
+        preset = self._annotation_preset_for_id(preset_id)
+        if preset is None:
+            return
+        name = str(preset.get("name") or "")
+        confirmed = styled_confirm(
+            self,
+            "删除标注预设",
+            f"确定删除标注预设“{name}”吗？\n\n这不会删除任何真实标注或标注文件。",
+            confirm_text="删除",
+            cancel_text=strings.DELETE_POINT_CANCEL,
+        )
+        if not confirmed:
+            return
+        self._sync_annotation_presets([item for item in self.annotation_presets if item.get("id") != preset_id])
+        toast(self, f"已删除标注预设“{name}”")
+
+    def _annotation_preset_for_id(self, preset_id: str) -> dict | None:
+        for preset in self.annotation_presets:
+            if preset.get("id") == preset_id:
+                return dict(preset)
+        return None
 
     def _on_annotation_group_expanded_changed(self, expanded: dict[str, bool]) -> None:
         if expanded is not self.annotation_group_expanded:
@@ -735,19 +862,19 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
             )
             return
 
-        self.route_mgr._annotation_points_cache = None
+        self.route_mgr.invalidate_annotation_cache()
         if output_rel:
             try:
                 config.save_config({"ANNOTATION_FILE": output_rel})
             except Exception as exc:
                 styled_info(self, "标注文件", f"标注文件已生成，但写入配置失败：{exc}")
         try:
-            self.route_mgr._point_icon_cache.clear()
-            self.route_mgr._annotation_icon_cache.clear()
+            self.route_mgr.invalidate_annotation_cache(icons=True)
         except Exception:
             pass
         self.annotation_panel.load_index(config.selected_annotation_path_from_settings())
         self.annotation_panel.set_preferences(self.annotation_type_ids)
+        self.annotation_panel.set_presets(self.annotation_presets)
         try:
             self.map_view._refresh_from_last_frame()
         except Exception:
@@ -860,9 +987,10 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
         self.hotkey_controller.start_listener()
         self._apply_configured_window_opacity()
         try:
-            self.route_mgr._annotation_points_cache = None
+            self.route_mgr.invalidate_annotation_cache()
             self.annotation_panel.load_index(config.selected_annotation_path_from_settings())
             self.annotation_panel.set_preferences(self.annotation_type_ids)
+            self.annotation_panel.set_presets(self.annotation_presets)
         except Exception:
             pass
         self.map_view._refresh_from_last_frame()

@@ -33,6 +33,9 @@ class WindowPrefsStore:
     def load_annotation_type_ids(self) -> list[str]:
         return self._gateway.get_annotation_type_ids()
 
+    def load_annotation_presets(self) -> list[dict]:
+        return self._gateway.get_annotation_presets()
+
     def load_annotation_group_expanded(self) -> dict[str, bool]:
         return self._gateway.get_annotation_group_expanded()
 
@@ -42,6 +45,9 @@ class WindowPrefsStore:
                 "ANNOTATION_TYPE_IDS": type_ids,
             }
         )
+
+    def save_annotation_presets(self, presets: list[dict]) -> None:
+        self._gateway.save({"ANNOTATION_PRESETS": presets})
 
     def save_annotation_group_expanded(self, expanded: dict[str, bool]) -> None:
         self._gateway.save({"ANNOTATION_GROUP_EXPANDED": expanded})

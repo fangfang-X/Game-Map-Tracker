@@ -159,15 +159,33 @@ def center_dialog(dialog: QDialog, parent) -> None:
     )
 
 
+def _anchor_global_rect(anchor: QWidget) -> tuple[int, int, int, int]:
+    top_left = anchor.mapToGlobal(QPoint(0, 0))
+    return top_left.x(), top_left.y(), anchor.width(), anchor.height()
+
+
 def place_left_of(dialog: QDialog, anchor: QWidget) -> None:
-    anchor_geo = anchor.frameGeometry()
+    anchor_left, anchor_top, _anchor_width, _anchor_height = _anchor_global_rect(anchor)
     screen = anchor.screen() if hasattr(anchor, "screen") else None
     avail = screen.availableGeometry() if screen is not None else None
 
-    target_x = anchor_geo.left() - dialog.width()
-    target_y = anchor_geo.top()
+    target_x = anchor_left - dialog.width()
+    target_y = anchor_top
     if avail is not None:
         if target_x < avail.left():
             target_x = avail.left()
+        target_y = max(avail.top(), min(target_y, avail.bottom() - dialog.height()))
+    dialog.move(target_x, target_y)
+
+
+def place_right_of(dialog: QDialog, anchor: QWidget) -> None:
+    anchor_left, anchor_top, anchor_width, _anchor_height = _anchor_global_rect(anchor)
+    screen = anchor.screen() if hasattr(anchor, "screen") else None
+    avail = screen.availableGeometry() if screen is not None else None
+
+    target_x = anchor_left + anchor_width
+    target_y = anchor_top
+    if avail is not None:
+        target_x = max(avail.left(), min(target_x, avail.right() - dialog.width()))
         target_y = max(avail.top(), min(target_y, avail.bottom() - dialog.height()))
     dialog.move(target_x, target_y)

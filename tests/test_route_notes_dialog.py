@@ -1,15 +1,17 @@
 import os
+import tempfile
 import unittest
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QPoint, QSize, Qt
+from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
     QLabel,
+    QLineEdit,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
@@ -20,13 +22,17 @@ from PySide6.QtWidgets import (
 
 from ui_island.services.route_manager import NODE_TYPE_COLLECT, NODE_TYPE_TELEPORT, NODE_TYPE_VIRTUAL
 from ui_island.dialogs.route_notes_dialog import (
+    _NODE_ICON_SIZE,
     _NODE_PANEL_SPACING,
     _NODE_SCROLL_MIN_HEIGHT,
     _TITLE_ROW_HEIGHT,
     RouteNotesDialog,
+    apply_route_node_auto_labels,
     route_node_display_name,
+    route_node_display_names,
     route_node_icon_pixmap,
     summarize_route_nodes,
+    RouteNodeEditorPanel,
 )
 
 
@@ -37,7 +43,34 @@ class RouteNotesDialogTests(unittest.TestCase):
 
     def test_route_node_display_name_falls_back_to_indexed_name(self) -> None:
         self.assertEqual(route_node_display_name({}, 2), "节点 3")
+        self.assertEqual(route_node_display_name({"typeId": "ore", "type": "矿石"}, 0), "矿石 1")
+        self.assertEqual(route_node_display_name({"node_type": "teleport"}, 0), "传送点 1")
         self.assertEqual(route_node_display_name({"label": " 黑矿 "}, 0), "黑矿")
+
+    def test_apply_route_node_auto_labels_counts_annotation_and_node_types(self) -> None:
+        labeled = apply_route_node_auto_labels([
+            {"x": 1, "y": 1, "typeId": "chest", "type": "宝箱"},
+            {"x": 2, "y": 2, "label": "自定义", "typeId": "chest", "type": "宝箱"},
+            {"x": 3, "y": 3, "label": "宝箱 9", "typeId": "chest", "type": "宝箱"},
+            {"x": 4, "y": 4, "node_type": "teleport"},
+            {"x": 5, "y": 5, "label": "节点 99", "node_type": "teleport"},
+            {"x": 6, "y": 6, "node_type": "virtual"},
+            {"x": 7, "y": 7},
+        ])
+
+        self.assertEqual(
+            [point.get("label") for point in labeled],
+            ["宝箱 1", "自定义", "宝箱 3", "传送点 1", "传送点 2", "引路点 1", "节点 7"],
+        )
+
+    def test_route_node_display_names_use_route_order_counts(self) -> None:
+        names = route_node_display_names([
+            {"x": 1, "y": 1, "label": "宝箱 9", "typeId": "chest", "type": "宝箱"},
+            {"x": 2, "y": 2, "typeId": "chest", "type": "宝箱"},
+            {"x": 3, "y": 3, "node_type": "collect"},
+        ])
+
+        self.assertEqual(names, ["宝箱 1", "宝箱 2", "采集点 1"])
 
     def test_missing_icon_uses_route_color_fallback_pixmap(self) -> None:
         pixmap, fallback = route_node_icon_pixmap({"icon_path": "missing.png"}, "#123456")
@@ -71,11 +104,254 @@ class RouteNotesDialogTests(unittest.TestCase):
             [{"x": 1, "y": 2}, {"label": "已命名", "icon_path": "missing.png"}],
         )
 
-        names = [label.text() for label in dialog.findChildren(QLabel, "RouteNotesNodeName")]
-        icons = dialog.findChildren(QLabel, "RouteNotesNodeIcon")
+        names = [editor.text() for editor in dialog.findChildren(QLineEdit, "RouteNotesNodeName")]
+        icons = dialog.findChildren(QPushButton, "RouteNotesNodeIcon")
 
         self.assertEqual(names, ["节点 1", "已命名"])
         self.assertEqual([icon.property("fallbackIcon") for icon in icons], [True, True])
+        self.assertTrue(all(icon.iconSize() == QSize(_NODE_ICON_SIZE, _NODE_ICON_SIZE) for icon in icons))
+
+    def test_node_panel_hydrates_annotation_icon_path_without_persisting_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            icon_path = os.path.join(tmpdir, "ore.png")
+            pixmap = QPixmap(_NODE_ICON_SIZE, _NODE_ICON_SIZE)
+            pixmap.fill(QColor("#ff0000"))
+            self.assertTrue(pixmap.save(icon_path))
+
+            panel = RouteNodeEditorPanel(
+                None,
+                annotation_icon_path_provider=lambda type_id: icon_path if type_id == "ore" else "",
+            )
+            panel.set_nodes([{"x": 1, "y": 2, "typeId": "ore", "type": "鐭跨煶"}])
+
+            icon = panel.findChild(QPushButton, "RouteNotesNodeIcon")
+            self.assertIsNotNone(icon)
+            self.assertFalse(icon.property("fallbackIcon"))
+            self.assertNotIn("icon_path", panel.draft_nodes()[0])
+            self.assertNotIn("icon_path", panel.nodes()[0])
+
+    def test_node_name_context_menu_uses_chinese_items(self) -> None:
+        panel = RouteNodeEditorPanel(None)
+        panel.set_nodes([{"x": 1, "y": 2, "label": "A"}])
+        editor = panel.findChild(QLineEdit, "RouteNotesNodeName")
+        self.assertIsNotNone(editor)
+        editor.selectAll()
+
+        with patch("ui_island.dialogs.route_notes_dialog.show_context_menu") as menu:
+            editor.customContextMenuRequested.emit(QPoint(1, 1))
+
+        menu.assert_called_once()
+        labels = [item.text for item in menu.call_args.args[2] if not item.separator]
+        self.assertEqual(labels, ["撤销", "重做", "剪切", "复制", "粘贴", "删除", "全选"])
+
+    def test_node_order_input_has_no_context_menu(self) -> None:
+        panel = RouteNodeEditorPanel(None)
+        panel.set_nodes([{"x": 1, "y": 2}])
+        order_input = panel.findChild(QLineEdit, "RouteNotesNodeOrderInput")
+
+        self.assertIsNotNone(order_input)
+        self.assertEqual(order_input.contextMenuPolicy(), Qt.NoContextMenu)
+
+    def test_dialog_renders_old_auto_name_as_refreshed_display_name(self) -> None:
+        dialog = RouteNotesDialog(
+            None,
+            "路线",
+            "",
+            (0x56, 0x34, 0x12),
+            None,
+            [
+                {"x": 1, "y": 1, "label": "宝箱 9", "typeId": "chest", "type": "宝箱"},
+                {"x": 2, "y": 2, "label": "节点 99", "node_type": "collect"},
+            ],
+        )
+
+        names = [editor.text() for editor in dialog.findChildren(QLineEdit, "RouteNotesNodeName")]
+
+        self.assertEqual(names, ["宝箱 1", "采集点 1"])
+
+    def test_node_name_input_updates_returned_node_draft(self) -> None:
+        dialog = RouteNotesDialog(
+            None,
+            "路线",
+            "",
+            (0x56, 0x34, 0x12),
+            None,
+            [{"x": 1, "y": 2}, {"x": 3, "y": 4, "label": "旧名"}],
+        )
+
+        editors = dialog.findChildren(QLineEdit, "RouteNotesNodeName")
+        editors[0].setText("新节点")
+        editors[1].clear()
+
+        self.assertEqual(dialog.nodes()[0]["label"], "新节点")
+        self.assertEqual(dialog.nodes()[1]["label"], "节点 2")
+        self.assertTrue(dialog.nodes_changed())
+
+    def test_node_annotation_picker_updates_and_clears_node_draft(self) -> None:
+        dialog = RouteNotesDialog(
+            None,
+            "路线",
+            "",
+            (0x56, 0x34, 0x12),
+            None,
+            [{"x": 1, "y": 2, "typeId": "old", "type": "旧"}],
+        )
+
+        with patch(
+            "ui_island.dialogs.route_notes_dialog.open_annotation_type_picker",
+            return_value={"typeId": "ore", "type": "矿石"},
+        ) as picker:
+            dialog._change_node_annotation(0)
+
+        picker.assert_called_once()
+        self.assertEqual(picker.call_args.kwargs["include_clear"], True)
+        self.assertEqual(picker.call_args.kwargs["placement"], "left_of")
+        self.assertIs(picker.call_args.kwargs["anchor"], dialog.findChild(QWidget, "RouteNotesRightColumn"))
+        self.assertEqual(dialog.nodes()[0]["typeId"], "ore")
+        self.assertEqual(dialog.nodes()[0]["type"], "矿石")
+        self.assertEqual(dialog.nodes()[0]["label"], "矿石 1")
+
+        with patch(
+            "ui_island.dialogs.route_notes_dialog.open_annotation_type_picker",
+            return_value={"clear": True},
+        ):
+            dialog._change_node_annotation(0)
+
+        self.assertNotIn("typeId", dialog.nodes()[0])
+        self.assertNotIn("type", dialog.nodes()[0])
+        self.assertEqual(dialog.nodes()[0]["label"], "节点 1")
+
+    def test_confirm_nodes_auto_label_empty_and_old_auto_names_without_overwriting_manual(self) -> None:
+        dialog = RouteNotesDialog(
+            None,
+            "路线",
+            "",
+            (0x56, 0x34, 0x12),
+            None,
+            [
+                {"x": 1, "y": 1, "typeId": "chest", "type": "宝箱"},
+                {"x": 2, "y": 2, "label": "手写宝箱", "typeId": "chest", "type": "宝箱"},
+                {"x": 3, "y": 3, "label": "节点 99", "node_type": "collect"},
+            ],
+        )
+
+        self.assertEqual(
+            [node["label"] for node in dialog.nodes()],
+            ["宝箱 1", "手写宝箱", "采集点 1"],
+        )
+
+    def test_order_input_reorders_nodes_and_refreshes_position_text(self) -> None:
+        dialog = RouteNotesDialog(
+            None,
+            "路线",
+            "",
+            (0x56, 0x34, 0x12),
+            None,
+            [{"x": 1, "y": 1, "label": "A"}, {"x": 2, "y": 2, "label": "B"}, {"x": 3, "y": 3, "label": "C"}],
+        )
+
+        order_inputs = dialog.findChildren(QLineEdit, "RouteNotesNodeOrderInput")
+        order_inputs[0].setText("3/3")
+        order_inputs[0].editingFinished.emit()
+
+        self.assertEqual([node.get("label") for node in dialog.nodes()], ["B", "C", "A"])
+        self.assertEqual(
+            [editor.text() for editor in dialog.findChildren(QLineEdit, "RouteNotesNodeOrderInput")],
+            ["1/3", "2/3", "3/3"],
+        )
+
+    def test_reorder_refreshes_old_auto_labels_by_new_route_order(self) -> None:
+        dialog = RouteNotesDialog(
+            None,
+            "路线",
+            "",
+            (0x56, 0x34, 0x12),
+            None,
+            [
+                {"x": 1, "y": 1, "label": "宝箱 1", "typeId": "chest", "type": "宝箱"},
+                {"x": 2, "y": 2, "label": "矿石 1", "typeId": "ore", "type": "矿石"},
+                {"x": 3, "y": 3, "label": "宝箱 2", "typeId": "chest", "type": "宝箱"},
+            ],
+        )
+
+        order_inputs = dialog.findChildren(QLineEdit, "RouteNotesNodeOrderInput")
+        order_inputs[2].setText("1/3")
+        order_inputs[2].editingFinished.emit()
+
+        self.assertEqual(
+            [node.get("label") for node in dialog.nodes()],
+            ["宝箱 1", "宝箱 2", "矿石 1"],
+        )
+
+    def test_dragging_node_row_reorders_nodes(self) -> None:
+        dialog = RouteNotesDialog(
+            None,
+            "路线",
+            "",
+            (0x56, 0x34, 0x12),
+            None,
+            [{"x": 1, "y": 1, "label": "A"}, {"x": 2, "y": 2, "label": "B"}, {"x": 3, "y": 3, "label": "C"}],
+        )
+        dialog.show()
+        self._app.processEvents()
+        rows = dialog.findChildren(QWidget, "RouteNotesNodeRow")
+
+        start = rows[0].rect().center()
+        end = rows[2].mapTo(rows[0], rows[2].rect().center())
+        QTest.mousePress(rows[0], Qt.LeftButton, Qt.NoModifier, start)
+        QTest.mouseMove(rows[0], end, 50)
+        QTest.mouseRelease(rows[0], Qt.LeftButton, Qt.NoModifier, end)
+        self._app.processEvents()
+
+        self.assertEqual([node.get("label") for node in dialog.nodes()], ["B", "C", "A"])
+
+    def test_dragging_node_name_input_reorders_nodes(self) -> None:
+        dialog = RouteNotesDialog(
+            None,
+            "璺嚎",
+            "",
+            (0x56, 0x34, 0x12),
+            None,
+            [{"x": 1, "y": 1, "label": "A"}, {"x": 2, "y": 2, "label": "B"}, {"x": 3, "y": 3, "label": "C"}],
+        )
+        dialog.show()
+        self._app.processEvents()
+        editors = dialog.findChildren(QLineEdit, "RouteNotesNodeName")
+        rows = dialog.findChildren(QWidget, "RouteNotesNodeRow")
+
+        start = editors[0].rect().center()
+        end = rows[2].mapTo(editors[0], rows[2].rect().center())
+        QTest.mousePress(editors[0], Qt.LeftButton, Qt.NoModifier, start)
+        QTest.mouseMove(editors[0], end, 50)
+        QTest.mouseRelease(editors[0], Qt.LeftButton, Qt.NoModifier, end)
+        self._app.processEvents()
+
+        self.assertEqual([node.get("label") for node in dialog.nodes()], ["B", "C", "A"])
+
+    def test_rejected_dialog_reports_no_node_changes_from_edit_route_notes(self) -> None:
+        def reject_dialog(dialog):
+            dialog.findChild(QLineEdit, "RouteNotesNodeName").setText("不会保存")
+            dialog.reject()
+
+        with patch("ui_island.dialogs.route_notes_dialog.center_dialog"), patch.object(
+            RouteNotesDialog,
+            "exec",
+            lambda self: reject_dialog(self) or 0,
+        ):
+            from ui_island.dialogs.route_notes_dialog import edit_route_notes
+
+            accepted, _notes, _color, nodes_changed, nodes = edit_route_notes(
+                None,
+                "路线",
+                "",
+                (0x56, 0x34, 0x12),
+                None,
+                [{"x": 1, "y": 2}],
+            )
+
+        self.assertFalse(accepted)
+        self.assertFalse(nodes_changed)
+        self.assertEqual(nodes, [{"x": 1, "y": 2}])
 
     def test_dialog_title_uses_route_name_without_duplicate_subtitle(self) -> None:
         route_name = "Long Route Name"
@@ -105,7 +381,7 @@ class RouteNotesDialogTests(unittest.TestCase):
         self.assertFalse(follow_dialog.reset_color_button.isEnabled())
         self.assertTrue(custom_dialog.reset_color_button.isEnabled())
 
-    def test_stats_panel_moves_below_shorter_notes_editor(self) -> None:
+    def test_route_details_stats_panel_is_below_notes_editor(self) -> None:
         dialog = RouteNotesDialog(
             None,
             "璺嚎",
@@ -122,6 +398,7 @@ class RouteNotesDialogTests(unittest.TestCase):
         stats_scroll = dialog.findChild(QScrollArea, "RouteNotesStatsScroll")
         nodes_title = right.findChildren(QLabel, "FieldLabel")[0] if right is not None else None
         notes_header = dialog.findChild(QWidget, "RouteNotesHeaderRow")
+        right_stats = right.findChild(QWidget, "RouteNotesStatsPanel") if right is not None else None
 
         self.assertIsNotNone(left)
         self.assertIsNotNone(right)
@@ -131,7 +408,9 @@ class RouteNotesDialogTests(unittest.TestCase):
         self.assertIsNotNone(nodes_title)
         self.assertIsNotNone(notes_header)
         self.assertIs(stats_scroll.widget(), stats)
+        self.assertIn(stats, left.findChildren(QWidget))
         self.assertNotIn(stats, right.findChildren(QWidget))
+        self.assertIsNone(right_stats)
         self.assertEqual(editor.minimumHeight(), 120)
         self.assertEqual(stats_scroll.minimumHeight(), 72)
         self.assertEqual(stats_scroll.maximumHeight(), 72)
@@ -142,26 +421,36 @@ class RouteNotesDialogTests(unittest.TestCase):
         self._app.processEvents()
         self.assertEqual(stats_scroll.verticalScrollBar().maximum(), 0)
 
-    def test_node_panel_geometry_fills_between_notes_title_and_stats_bottom(self) -> None:
-        def panel_geometry_for(nodes: list[dict]) -> tuple[int, int, int, int, int, int, int, int, int]:
+    def test_route_details_geometry_keeps_stats_under_notes_and_nodes_on_right(self) -> None:
+        def panel_geometry_for(nodes: list[dict]) -> tuple[int, int, int, int, int, int, int, int, int, int, int, int]:
             dialog = RouteNotesDialog(None, "Route", "", (0x56, 0x34, 0x12), None, nodes)
             dialog.show()
             self._app.processEvents()
             left = dialog.findChild(QWidget, "RouteNotesLeftColumn")
             right = dialog.findChild(QWidget, "RouteNotesRightColumn")
+            stats_scroll = dialog.findChild(QScrollArea, "RouteNotesStatsScroll")
+            stats_panel = dialog.stats_panel
             scroll = dialog.findChild(QScrollArea, "RouteNotesNodeScroll")
+            editor = dialog.findChild(QPlainTextEdit)
             self.assertIsNotNone(left)
             self.assertIsNotNone(right)
+            self.assertIsNotNone(stats_scroll)
+            self.assertIsNotNone(stats_panel)
             self.assertIsNotNone(scroll)
-            title = right.findChildren(QLabel, "FieldLabel")[0]
+            self.assertIsNotNone(editor)
+            nodes_title = right.findChildren(QLabel, "FieldLabel")[0]
             bottom_blank = right.height() - (scroll.geometry().y() + scroll.height())
             bottom_gap = left.height() - (right.geometry().y() + right.height())
             geometry = (
                 left.height(),
                 right.height(),
                 right.geometry().y(),
-                title.geometry().y(),
-                title.height(),
+                editor.geometry().y(),
+                editor.geometry().height(),
+                stats_panel.geometry().y(),
+                stats_panel.height(),
+                nodes_title.geometry().y(),
+                nodes_title.height(),
                 scroll.geometry().y(),
                 scroll.height(),
                 bottom_blank,
@@ -179,18 +468,35 @@ class RouteNotesDialogTests(unittest.TestCase):
         ])
 
         for geometry in (small_geometry, large_geometry):
-            left_height, right_height, right_y, title_y, title_height, scroll_y, scroll_height, bottom_blank, bottom_gap = geometry
+            (
+                left_height,
+                right_height,
+                right_y,
+                editor_y,
+                editor_height,
+                stats_y,
+                stats_height,
+                nodes_title_y,
+                nodes_title_height,
+                scroll_y,
+                scroll_height,
+                bottom_blank,
+                bottom_gap,
+            ) = geometry
             self.assertEqual(right_y, 0)
             self.assertEqual(right_height, left_height)
-            self.assertEqual(title_y, 0)
-            self.assertEqual(title_height, _TITLE_ROW_HEIGHT)
+            self.assertGreater(stats_y, editor_y + editor_height)
+            self.assertGreaterEqual(stats_height, 72)
+            self.assertEqual(nodes_title_y, 0)
+            self.assertEqual(nodes_title_height, _TITLE_ROW_HEIGHT)
             self.assertEqual(scroll_y, _TITLE_ROW_HEIGHT + _NODE_PANEL_SPACING)
             self.assertEqual(scroll_height, right_height - scroll_y)
             self.assertGreaterEqual(scroll_height, _NODE_SCROLL_MIN_HEIGHT)
             self.assertEqual(bottom_blank, 0)
             self.assertEqual(bottom_gap, 0)
 
-        self.assertGreaterEqual(large_geometry[6], small_geometry[6])
+        self.assertGreaterEqual(large_geometry[10], _NODE_SCROLL_MIN_HEIGHT)
+        self.assertGreaterEqual(small_geometry[10], _NODE_SCROLL_MIN_HEIGHT)
 
     def test_large_stats_panel_grows_to_max_then_scrolls(self) -> None:
         nodes = [
@@ -225,6 +531,64 @@ class RouteNotesDialogTests(unittest.TestCase):
         self._app.processEvents()
 
         self.assertGreater(scrollbar.value(), before)
+
+    def test_route_details_stats_refresh_after_node_annotation_change(self) -> None:
+        dialog = RouteNotesDialog(
+            None,
+            "Route",
+            "",
+            (0x56, 0x34, 0x12),
+            None,
+            [{"x": 1, "y": 2}],
+        )
+        stats = dialog.findChild(QWidget, "RouteNotesStatsPanel")
+        self.assertIsNotNone(stats)
+        self.assertFalse(any(label.text() == "Ore 1" for label in stats.findChildren(QLabel, "RouteNotesStatChip")))
+
+        with patch(
+            "ui_island.dialogs.route_notes_dialog.open_annotation_type_picker",
+            return_value={"typeId": "ore", "type": "Ore"},
+        ):
+            dialog._change_node_annotation(0)
+
+        stats = dialog.findChild(QWidget, "RouteNotesStatsPanel")
+        self.assertTrue(any(label.text() == "Ore 1" for label in stats.findChildren(QLabel, "RouteNotesStatChip")))
+
+    def test_annotation_picker_placement_helpers_keep_default_centering(self) -> None:
+        from ui_island.dialogs.annotation_type_picker import open_annotation_type_picker
+
+        accepted = 0
+        with (
+            patch("ui_island.dialogs.annotation_type_picker.AnnotationTypePickerDialog.exec", return_value=accepted),
+            patch("ui_island.dialogs.annotation_type_picker.center_dialog") as center,
+            patch("ui_island.dialogs.annotation_type_picker.place_left_of") as left,
+            patch("ui_island.dialogs.annotation_type_picker.place_right_of") as right,
+        ):
+            open_annotation_type_picker(None, [], "")
+
+        center.assert_called_once()
+        left.assert_not_called()
+        right.assert_not_called()
+
+    def test_annotation_picker_can_be_placed_left_or_right_of_anchor(self) -> None:
+        from ui_island.dialogs.annotation_type_picker import open_annotation_type_picker
+
+        anchor = QWidget()
+        accepted = 0
+        with (
+            patch("ui_island.dialogs.annotation_type_picker.AnnotationTypePickerDialog.exec", return_value=accepted),
+            patch("ui_island.dialogs.annotation_type_picker.center_dialog") as center,
+            patch("ui_island.dialogs.annotation_type_picker.place_left_of") as left,
+            patch("ui_island.dialogs.annotation_type_picker.place_right_of") as right,
+        ):
+            open_annotation_type_picker(anchor, [], "", placement="left_of", anchor=anchor)
+            open_annotation_type_picker(anchor, [], "", placement="right_of", anchor=anchor)
+
+        center.assert_not_called()
+        self.assertEqual(left.call_count, 1)
+        self.assertIs(left.call_args.args[1], anchor)
+        self.assertEqual(right.call_count, 1)
+        self.assertIs(right.call_args.args[1], anchor)
 
     def test_pick_color_uses_shared_styled_picker(self) -> None:
         dialog = RouteNotesDialog(None, "路线", "", (0x56, 0x34, 0x12), None, [])

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
+
+from ui_island.services import resource_metadata
 
 _PROGRESS_FILE = "progress.json"
 _VISIBILITY_FILE = "selected_routes.json"
@@ -57,6 +60,19 @@ def _target_path(source: Path, input_root: Path, output_root: Path) -> Path:
     return output_root / relative.with_name(target_name)
 
 
+def validate_distinct_output_dir(input_dir: str | os.PathLike[str], output_dir: str | os.PathLike[str], *, recursive: bool = True) -> None:
+    source_root = Path(input_dir).expanduser().resolve(strict=False)
+    target_root = Path(output_dir).expanduser().resolve(strict=False)
+    if source_root == target_root:
+        raise ValueError("输出目录不能和输入目录相同，请选择独立的输出目录。")
+    if recursive:
+        try:
+            target_root.relative_to(source_root)
+        except ValueError:
+            return
+        raise ValueError("递归转换时输出目录不能位于输入目录内部，请选择独立的输出目录。")
+
+
 def _is_route_payload(payload: object) -> bool:
     if not isinstance(payload, dict):
         return False
@@ -70,6 +86,25 @@ def _clean_route_metadata(payload: dict) -> dict:
     output.pop("map_hashs", None)
     output.pop("map_info", None)
     return output
+
+
+def _is_valid_route_id(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    raw = value.strip()
+    if len(raw) >= 10 and raw.isdigit():
+        return True
+    return bool(resource_metadata.HASH_RE.fullmatch(raw.casefold()))
+
+
+def _ensure_route_metadata(payload: dict) -> dict:
+    resource_metadata.ensure_metadata(payload, include_route_defaults=True)
+    raw_id = str(payload.get("id") or "").strip()
+    if _is_valid_route_id(raw_id):
+        payload["id"] = raw_id
+    else:
+        payload["id"] = uuid.uuid4().hex
+    return payload
 
 
 def _write_json_atomic(path: Path, payload: dict) -> None:
@@ -91,7 +126,7 @@ def normalize_route_payload(
 ) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("路线 JSON 顶层必须是对象")
-    return _ordered_route_payload(_clean_route_metadata(payload))
+    return _ordered_route_payload(_ensure_route_metadata(_clean_route_metadata(payload)))
 
 
 def old_big_map_xy_to_latlng(x: float, y: float) -> tuple[float, float]:
@@ -138,7 +173,7 @@ def convert_old_big_map_route_payload(payload: dict) -> tuple[dict, int]:
             converted_points += 1
             converted.append(copied)
         output[key] = converted
-    return _ordered_route_payload(output), converted_points
+    return _ordered_route_payload(_ensure_route_metadata(output)), converted_points
 
 
 def convert_route_folder(
@@ -152,6 +187,7 @@ def convert_route_folder(
     target_root = Path(output_dir).expanduser().resolve(strict=False)
     if not source_root.is_dir():
         raise ValueError(f"输入目录不存在：{source_root}")
+    validate_distinct_output_dir(source_root, target_root, recursive=recursive)
 
     report = RouteConversionReport()
     target_root.mkdir(parents=True, exist_ok=True)
@@ -174,7 +210,7 @@ def convert_route_folder(
                 report.ignored += 1
                 report.messages.append(f"[忽略] 非路线文件：{source}")
                 continue
-            converted = normalize_route_payload(payload)
+            converted, point_count = convert_old_big_map_route_payload(payload)
             target.parent.mkdir(parents=True, exist_ok=True)
             with target.open("w", encoding="utf-8") as handle:
                 json.dump(converted, handle, indent=2, ensure_ascii=False)
@@ -184,6 +220,7 @@ def convert_route_folder(
             continue
 
         report.converted += 1
+        report.points_converted += point_count
         report.messages.append(f"[完成] {source} -> {target}")
 
     return report

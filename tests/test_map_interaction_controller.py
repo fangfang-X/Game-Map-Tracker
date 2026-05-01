@@ -23,6 +23,8 @@ class _FakeRoutePanelController:
         self.refresh_count = 0
         self.append_calls: list[tuple[int, int, dict | None]] = []
         self.change_order_calls: list[int] = []
+        self.active_notes_route_id = ""
+        self.notes_nodes: list[dict] | None = None
 
     def refresh_tracked_routes(self) -> None:
         self.refresh_count += 1
@@ -34,6 +36,47 @@ class _FakeRoutePanelController:
 
     def change_drawing_point_order(self, point_index: int) -> None:
         self.change_order_calls.append(int(point_index))
+
+    def has_active_route_notes_draft(self, route_id: str) -> bool:
+        return route_id == self.active_notes_route_id
+
+    def route_notes_draft_nodes(self, route_id: str) -> list[dict] | None:
+        if not self.has_active_route_notes_draft(route_id) or self.notes_nodes is None:
+            return None
+        return [dict(point) for point in self.notes_nodes]
+
+    def update_route_notes_draft_nodes(self, route_id: str, nodes: list[dict], refresh: bool = True) -> bool:
+        if not self.has_active_route_notes_draft(route_id):
+            return False
+        self.notes_nodes = [dict(point) for point in nodes]
+        route = self.window.route_mgr.routes.get(route_id)
+        if route is not None:
+            route["points"] = [dict(point) for point in self.notes_nodes]
+        return True
+
+    def move_route_notes_point(self, route_id: str, point_index: int, x: int, y: int, **_kwargs) -> bool:
+        nodes = self.route_notes_draft_nodes(route_id)
+        if nodes is None or not (0 <= point_index < len(nodes)):
+            return False
+        nodes[point_index]["x"] = int(x)
+        nodes[point_index]["y"] = int(y)
+        return self.update_route_notes_draft_nodes(route_id, nodes)
+
+    def reorder_route_notes_point(self, route_id: str, from_index: int, to_index: int) -> bool:
+        nodes = self.route_notes_draft_nodes(route_id)
+        if nodes is None or not (0 <= from_index < len(nodes)):
+            return False
+        point = nodes.pop(from_index)
+        nodes.insert(max(0, min(len(nodes), int(to_index))), point)
+        return self.update_route_notes_draft_nodes(route_id, nodes)
+
+    def set_route_notes_point_annotation(self, route_id: str, point_index: int, type_id: str, type_name: str) -> bool:
+        nodes = self.route_notes_draft_nodes(route_id)
+        if nodes is None or not (0 <= point_index < len(nodes)):
+            return False
+        nodes[point_index]["typeId"] = type_id
+        nodes[point_index]["type"] = type_name
+        return self.update_route_notes_draft_nodes(route_id, nodes)
 
 
 class _FakeRouteManager:
@@ -159,6 +202,19 @@ class MapInteractionControllerTests(unittest.TestCase):
         self.assertEqual(window.route_mgr.position_calls, [("route-1", 0, 5, 6, False)])
         self.assertEqual(window.map_view.refresh_count, 1)
         self.assertEqual(window.route_panel_controller.refresh_count, 1)
+
+    def test_move_route_point_preview_updates_active_notes_draft_without_route_manager_call(self) -> None:
+        controller, window = self._controller()
+        window.route_panel_controller.active_notes_route_id = "route-1"
+        window.route_panel_controller.notes_nodes = [{"x": 1, "y": 2}, {"x": 10, "y": 20}]
+
+        controller.move_route_point_preview("route-1", 0, 5, 6)
+        controller.finish_move_route_point("route-1", 0, 1, 2, 7, 8)
+
+        self.assertEqual(window.route_panel_controller.notes_nodes[0], {"x": 7, "y": 8})
+        self.assertEqual(window.route_mgr.position_calls, [])
+        self.assertFalse(controller.has_route_point_move_undo())
+        self.assertGreaterEqual(window.map_view.refresh_count, 2)
 
     def test_add_annotated_point_selects_annotation_then_reuses_route_insert_flow(self) -> None:
         controller, window = self._controller()
@@ -339,6 +395,40 @@ class MapInteractionControllerTests(unittest.TestCase):
         self.assertEqual(window.map_view.refresh_count, 1)
         self.assertEqual(window.route_panel_controller.refresh_count, 1)
         toast.assert_called_once()
+
+    def test_change_point_order_updates_active_notes_draft_without_json_write(self) -> None:
+        controller, window = self._controller()
+        window.route_panel_controller.active_notes_route_id = "route-1"
+        window.route_panel_controller.notes_nodes = [
+            {"id": "a", "x": 1, "y": 2},
+            {"id": "b", "x": 10, "y": 20},
+            {"id": "c", "x": 30, "y": 40},
+        ]
+
+        with patch("ui_island.controllers.map_interaction_controller.open_point_order_dialog", return_value=2):
+            controller.change_point_order("route-1", 0)
+
+        self.assertEqual([point["id"] for point in window.route_panel_controller.notes_nodes], ["b", "c", "a"])
+        self.assertEqual(window.route_mgr.reorder_calls, [])
+        self.assertFalse(controller.has_route_point_move_undo())
+
+    def test_change_point_annotation_updates_active_notes_draft_without_json_write(self) -> None:
+        controller, window = self._controller()
+        window.route_panel_controller.active_notes_route_id = "route-1"
+        window.route_panel_controller.notes_nodes = [{"x": 1, "y": 2}]
+        window.route_mgr.set_point_annotation = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("persisted"))
+
+        with (
+            patch(
+                "ui_island.controllers.map_interaction_controller.open_annotation_type_picker",
+                return_value={"typeId": "flower", "type": "Sunflower"},
+            ),
+            patch("ui_island.controllers.map_interaction_controller.toast"),
+        ):
+            controller.change_point_annotation("route-1", 0)
+
+        self.assertEqual(window.route_panel_controller.notes_nodes[0]["typeId"], "flower")
+        self.assertEqual(window.route_panel_controller.notes_nodes[0]["type"], "Sunflower")
 
     def test_change_point_order_cancel_or_same_position_is_noop(self) -> None:
         controller, window = self._controller()

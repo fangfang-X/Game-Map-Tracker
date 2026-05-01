@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import traceback
+from datetime import datetime
 from html import escape
 from typing import Callable
 
@@ -12,6 +14,7 @@ from PySide6.QtCore import QPoint, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QDoubleValidator, QIntValidator, QMouseEvent
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QColorDialog,
     QComboBox,
@@ -26,6 +29,7 @@ from PySide6.QtWidgets import (
     QKeySequenceEdit,
     QSizePolicy,
     QSpinBox,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -69,7 +73,10 @@ _ROUTE_COLOR_TOOLTIPS = {
     "ROUTE_GUIDE_LINE_COLOR": "代表引路点的指引路径",
     "ROUTE_POINTER_ARROW_COLOR": "玩家点位到追踪目标节点的指向箭头",
 }
-_SETTINGS_DISCLAIMER = "本工具免费分享，地图与标注数据来源于17173，感谢地图维护者"
+_SETTINGS_DISCLAIMER = "本工具免费分享，内置地图与标注数据来源于17173，感谢地图维护者"
+_MAP_FILE_PLACEHOLDER = "请选择底图"
+_ANNOTATION_FILE_PLACEHOLDER = "请选择标注文件"
+_ROUTE_CONVERSION_LOG_LIMIT = 40
 
 
 class _ElidedLabel(QLabel):
@@ -181,15 +188,20 @@ class RouteFormatConverterDialog(StyledDialogBase):
         mode_label.setObjectName("FieldLabel")
         mode_layout.addWidget(mode_label)
         mode_combo = QComboBox(self)
-        mode_combo.addItem("整理路线格式（输出到新目录）", self._MODE_NORMALIZE)
-        mode_combo.addItem("旧 big_map 坐标转 17173 坐标（覆盖源文件）", self._MODE_OLD_TO_17173)
+        mode_combo.addItem("旧路线转新格式（输出到新目录）", self._MODE_NORMALIZE)
+        mode_combo.addItem("旧路线转新格式（覆盖源文件）", self._MODE_OLD_TO_17173)
         mode_combo.currentIndexChanged.connect(self._sync_mode_ui)
         self._mode_combo = mode_combo
         mode_layout.addWidget(mode_combo, stretch=1)
         layout.addWidget(mode_row)
 
         self._input_editor = self._build_path_row(layout, "输入目录", config.app_path("routes"), self._choose_input)
-        self._output_editor = self._build_path_row(layout, "输出目录", config.app_path("routes"), self._choose_output)
+        self._output_editor = self._build_path_row(
+            layout,
+            "输出目录",
+            config.app_path("routes_converted"),
+            self._choose_output,
+        )
 
         option_row = QWidget(self)
         option_layout = QHBoxLayout(option_row)
@@ -256,9 +268,9 @@ class RouteFormatConverterDialog(StyledDialogBase):
             self._overwrite_checkbox.setVisible(not old_to_17173)
         if self._log is not None:
             self._log.setPlaceholderText(
-                "此模式会直接覆盖源路线文件，请先备份原路线文件。"
+                "此模式会转换坐标并补齐新格式字段，然后直接覆盖源路线文件，请先备份原路线文件。"
                 if old_to_17173
-                else "转换日志"
+                else "转换日志：会转换坐标并补齐 id、format_version、enable_versions"
             )
 
     def _choose_input(self) -> None:
@@ -278,8 +290,71 @@ class RouteFormatConverterDialog(StyledDialogBase):
             return
         self._log.appendPlainText(text)
 
+    def _append_report_log(self, report, log_path: str = "") -> None:
+        self._append_log(f"已转换：{report.converted}")
+        self._append_log(f"已跳过：{report.skipped}")
+        self._append_log(f"已忽略：{report.ignored}")
+        if report.points_converted:
+            self._append_log(f"已转换点位：{report.points_converted}")
+        self._append_log(f"错误数：{report.errors}")
+        if log_path:
+            self._append_log(f"完整日志：{log_path}")
+        if report.messages:
+            self._append_log("")
+            shown = report.messages[:_ROUTE_CONVERSION_LOG_LIMIT]
+            for message in shown:
+                self._append_log(message)
+            remaining = len(report.messages) - len(shown)
+            if remaining > 0:
+                self._append_log(f"... 还有 {remaining} 条，见完整日志")
+
+    def _write_conversion_log(self, report, *, input_dir: str, output_dir: str, mode: str) -> str:
+        debug_dir = config.app_path("debug")
+        os.makedirs(debug_dir, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(debug_dir, f"route_conversion_{stamp}.log")
+        lines = [
+            f"时间：{datetime.now().isoformat(timespec='seconds')}",
+            f"模式：{mode}",
+            f"输入目录：{input_dir}",
+            f"输出目录：{output_dir}",
+            f"已转换：{report.converted}",
+            f"已跳过：{report.skipped}",
+            f"已忽略：{report.ignored}",
+            f"已转换点位：{report.points_converted}",
+            f"错误数：{report.errors}",
+            "",
+            "明细：",
+            *[str(message) for message in report.messages],
+            "",
+        ]
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(lines))
+        return path
+
+    def _show_conversion_error(self, title: str, exc: Exception) -> None:
+        self._append_log(f"[错误] {exc}")
+        try:
+            debug_dir = config.app_path("debug")
+            os.makedirs(debug_dir, exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            path = os.path.join(debug_dir, f"route_conversion_error_{stamp}.log")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(traceback.format_exc())
+            self._append_log(f"错误日志：{path}")
+        except Exception:
+            path = ""
+        message = str(exc)
+        if path:
+            message += f"\n\n详细错误已写入：{path}"
+        styled_info(self, title, message)
+
     def _start_conversion(self) -> None:
-        from tools.route_format_converter import convert_old_big_map_routes_in_place, convert_route_folder
+        from tools.route_format_converter import (
+            convert_old_big_map_routes_in_place,
+            convert_route_folder,
+            validate_distinct_output_dir,
+        )
 
         input_dir = self._input_editor.text().strip() if self._input_editor is not None else ""
         mode = self._current_mode()
@@ -293,7 +368,7 @@ class RouteFormatConverterDialog(StyledDialogBase):
                 confirmed = styled_confirm(
                     self,
                     "覆盖转换路线",
-                    "此操作会把旧 big_map 坐标转换为 big_map_17173 坐标，并直接覆盖源路线文件。\n\n"
+                    "此操作会把旧路线坐标转换为新路线坐标，补齐 id、format_version、enable_versions，并直接覆盖源路线文件。\n\n"
                     "正式执行前请先备份原路线文件。确定继续吗？",
                     confirm_text="已备份，开始转换",
                     cancel_text="取消",
@@ -310,6 +385,11 @@ class RouteFormatConverterDialog(StyledDialogBase):
                 if not output_dir:
                     styled_info(self, "路线转换", "请先选择输出目录。")
                     return
+                validate_distinct_output_dir(
+                    input_dir,
+                    output_dir,
+                    recursive=self._recursive_checkbox.isChecked() if self._recursive_checkbox is not None else True,
+                )
                 report = convert_route_folder(
                     input_dir,
                     output_dir,
@@ -318,25 +398,21 @@ class RouteFormatConverterDialog(StyledDialogBase):
                 )
                 refresh_dir = output_dir
         except Exception as exc:
-            styled_info(self, "路线转换失败", str(exc))
-            self._append_log(f"[错误] {exc}")
+            self._show_conversion_error("路线转换失败", exc)
             return
 
-        self._append_log(f"已转换：{report.converted}")
-        self._append_log(f"已跳过：{report.skipped}")
-        self._append_log(f"已忽略：{report.ignored}")
-        if report.points_converted:
-            self._append_log(f"已转换点位：{report.points_converted}")
-        self._append_log(f"错误数：{report.errors}")
-        if report.messages:
-            self._append_log("")
-            for message in report.messages:
-                self._append_log(message)
+        log_path = ""
+        try:
+            log_path = self._write_conversion_log(report, input_dir=input_dir, output_dir=refresh_dir, mode=mode)
+        except Exception as exc:
+            self._append_log(f"[警告] 写入完整日志失败：{exc}")
+        self._append_report_log(report, log_path)
         if report.errors:
             styled_info(self, "路线转换完成", "转换已结束，但存在错误，请查看日志。")
         else:
             toast(self, "路线转换完成")
-        self._refresh_routes_if_needed(refresh_dir)
+        if mode == self._MODE_OLD_TO_17173:
+            self._refresh_routes_if_needed(refresh_dir)
 
     def _refresh_routes_if_needed(self, output_dir: str) -> None:
         try:
@@ -351,8 +427,171 @@ class RouteFormatConverterDialog(StyledDialogBase):
         if controller is not None:
             try:
                 controller.reload_route_list()
-            except Exception:
-                pass
+            except Exception as exc:
+                self._show_conversion_error("路线列表刷新失败", exc)
+
+
+class AnnotationFormatConverterDialog(StyledDialogBase):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent, "标注转换", min_width=680, max_width=860)
+        self._old_file_editor: QLineEdit | None = None
+        self._new_file_editor: QLineEdit | None = None
+        self._merge_checkbox: QCheckBox | None = None
+        self._log: QPlainTextEdit | None = None
+        self._build_ui()
+        self.resize(760, 480)
+
+    def _build_ui(self) -> None:
+        content = QWidget(self)
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        warning = QLabel("合并前请先备份标注数据")
+        warning.setObjectName("FieldLabel")
+        warning.setWordWrap(True)
+        layout.addWidget(warning)
+
+        self._old_file_editor = self._build_file_row(
+            layout,
+            "旧标注文件",
+            config.ensure_annotations_dir(),
+            self._choose_old_file,
+        )
+        self._new_file_editor = self._build_file_row(
+            layout,
+            "新标注文件",
+            config.selected_annotation_path_from_settings() or config.ensure_annotations_dir(),
+            self._choose_new_file,
+        )
+
+        option_row = QWidget(self)
+        option_layout = QHBoxLayout(option_row)
+        option_layout.setContentsMargins(0, 0, 0, 0)
+        option_layout.setSpacing(8)
+        merge_checkbox = QCheckBox("合并到新标注文件")
+        merge_checkbox.setChecked(True)
+        merge_checkbox.toggled.connect(self._sync_merge_ui)
+        self._merge_checkbox = merge_checkbox
+        option_layout.addWidget(merge_checkbox)
+        option_layout.addStretch()
+        layout.addWidget(option_row)
+
+        start_btn = QPushButton("开始转换")
+        start_btn.setFixedHeight(32)
+        start_btn.clicked.connect(self._start_conversion)
+        layout.addWidget(start_btn)
+
+        log = QPlainTextEdit(self)
+        log.setReadOnly(True)
+        log.setMinimumHeight(200)
+        log.setPlaceholderText("转换日志")
+        self._log = log
+        layout.addWidget(log, stretch=1)
+
+        self.shell_layout.addWidget(content, stretch=1)
+        self.add_action_row(confirm_text="关闭", cancel_text="")
+        self._sync_merge_ui()
+
+    def _build_file_row(self, layout: QVBoxLayout, label_text: str, value: str, callback) -> QLineEdit:
+        row = QWidget(self)
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(8)
+        label = QLabel(label_text)
+        label.setObjectName("FieldLabel")
+        row_layout.addWidget(label)
+        editor = QLineEdit(value)
+        editor.setMinimumHeight(28)
+        row_layout.addWidget(editor, stretch=1)
+        button = QPushButton("浏览")
+        button.setFixedHeight(28)
+        button.clicked.connect(callback)
+        row_layout.addWidget(button)
+        layout.addWidget(row)
+        return editor
+
+    def _choose_old_file(self) -> None:
+        selected, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "选择旧标注数据文件",
+            self._old_file_editor.text() if self._old_file_editor else config.ensure_annotations_dir(),
+            "标注数据 (*.json)",
+        )
+        if selected and self._old_file_editor is not None:
+            self._old_file_editor.setText(selected)
+
+    def _choose_new_file(self) -> None:
+        selected, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "选择新标注数据文件",
+            self._new_file_editor.text() if self._new_file_editor else config.ensure_annotations_dir(),
+            "标注数据 (*.json)",
+        )
+        if selected and self._new_file_editor is not None:
+            self._new_file_editor.setText(selected)
+
+    def _sync_merge_ui(self) -> None:
+        merge = self._merge_checkbox.isChecked() if self._merge_checkbox is not None else True
+        if self._new_file_editor is not None:
+            self._new_file_editor.setEnabled(merge)
+
+    def _append_log(self, text: str) -> None:
+        if self._log is not None:
+            self._log.appendPlainText(text)
+
+    def _start_conversion(self) -> None:
+        from tools.annotation_format_converter import convert_annotation_file
+
+        old_file = self._old_file_editor.text().strip() if self._old_file_editor is not None else ""
+        new_file = self._new_file_editor.text().strip() if self._new_file_editor is not None else ""
+        merge = self._merge_checkbox.isChecked() if self._merge_checkbox is not None else True
+        if not old_file:
+            styled_info(self, "标注转换", "请先选择旧标注文件。")
+            return
+        if merge and not new_file:
+            styled_info(self, "标注转换", "请先选择要合并的新标注文件。")
+            return
+        confirmed = styled_confirm(
+            self,
+            "标注转换",
+            "合并前请先备份标注数据\n\n转换会在 annotations/ 下生成新的标注文件，不会覆盖旧标注或新标注文件。确定继续吗？",
+            confirm_text="已备份，开始转换",
+            cancel_text="取消",
+        )
+        if not confirmed:
+            return
+        if self._log is not None:
+            self._log.clear()
+
+        try:
+            report = convert_annotation_file(
+                old_file,
+                config.ensure_annotations_dir(),
+                merge=merge,
+                merge_with=new_file if merge else None,
+            )
+        except Exception as exc:
+            self._append_log(f"[错误] {exc}")
+            styled_info(self, "标注转换失败", str(exc))
+            return
+
+        self._append_log(f"已转换点位：{report.converted_points}")
+        self._append_log(f"已跳过点位：{report.skipped_points}")
+        self._append_log(f"已去重点位：{report.deduplicated_points}")
+        self._append_log(f"错误数：{report.errors}")
+        if report.messages:
+            self._append_log("")
+            for message in report.messages:
+                self._append_log(message)
+        if report.errors:
+            styled_info(self, "标注转换完成", "转换已结束，但存在错误，请查看日志。")
+            return
+
+        parent = self.parent()
+        if parent is not None and hasattr(parent, "_refresh_annotation_file_combo_preserving_selection"):
+            parent._refresh_annotation_file_combo_preserving_selection()
+        toast(self, "标注转换完成，请在标注文件中手动选择后应用")
 
 
 class SettingsDialog(QDialog):
@@ -459,14 +698,6 @@ class SettingsDialog(QDialog):
         route_color_row = self._build_route_color_row()
         hotkey_row = self._build_hotkey_row()
         opacity_row = self._build_opacity_row()
-        common_extra = self._build_common_extra(
-            map_file_row,
-            annotation_file_row,
-            minimap_row,
-            opacity_row,
-            route_color_row,
-            hotkey_row,
-        )
         tools_section = self._build_tools_section()
 
         buttons_bar = QWidget()
@@ -498,40 +729,22 @@ class SettingsDialog(QDialog):
         apply_restart_btn.clicked.connect(self._on_apply_and_restart)
         btn_row.addWidget(apply_restart_btn)
 
-        common_probe = self._build_section(
-            "通用设置",
-            COMMON_FIELDS,
-            two_columns=True,
-            narrow_editor=True,
-            extra_widget=common_extra,
-            extra_widget_position="top",
+        bottom_section_height = 313
+        common_section = self._build_common_tabbed_section(
+            resource_rows=(map_file_row, annotation_file_row, minimap_row),
+            route_rows=(route_color_row, opacity_row),
+            interaction_rows=(hotkey_row,),
+            param_fields=COMMON_FIELDS,
+            section_height=bottom_section_height,
         )
         top_section_max_height = self._compute_top_section_max_height(
             title_bar_height=title_bar.sizeHint().height(),
             bottom_row_height=max(
-                common_probe.sizeHint().height(),
+                common_section.sizeHint().height(),
                 tools_section.sizeHint().height(),
             ),
             button_row_height=buttons_bar.sizeHint().height(),
             shell_spacing=shell_layout.spacing(),
-        )
-        bottom_section_height = 313
-        bottom_section_body_height = (
-            bottom_section_height
-            - self._SECTION_TOP_MARGIN
-            - self._SECTION_BOTTOM_MARGIN
-            - 8
-            - self._section_title_height()
-        )
-        common_section = self._build_section(
-            "通用设置",
-            COMMON_FIELDS,
-            max_height=bottom_section_body_height,
-            two_columns=True,
-            narrow_editor=True,
-            extra_widget=common_extra,
-            extra_widget_position="top",
-            horizontal_scroll=True,
         )
         common_section.setFixedHeight(bottom_section_height)
         tools_section.setFixedHeight(bottom_section_height)
@@ -637,6 +850,109 @@ class SettingsDialog(QDialog):
         card_layout.addStretch(1)
         return card
 
+    def _build_common_tabbed_section(
+        self,
+        *,
+        resource_rows: tuple[QWidget, ...],
+        route_rows: tuple[QWidget, ...],
+        interaction_rows: tuple[QWidget, ...],
+        param_fields: list[Field],
+        section_height: int,
+    ) -> QFrame:
+        card = QFrame()
+        card.setObjectName("PanelCard")
+        card.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(14, 12, 14, 12)
+        card_layout.setSpacing(8)
+
+        title_label = QLabel("通用设置")
+        title_label.setObjectName("TitleLabel")
+        title_label.setStyleSheet("font-size: 13px;")
+        title_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        title_label.setFixedHeight(title_label.sizeHint().height())
+        card_layout.addWidget(title_label)
+
+        tab_bar = QWidget()
+        tab_bar_layout = QHBoxLayout(tab_bar)
+        tab_bar_layout.setContentsMargins(0, 0, 0, 0)
+        tab_bar_layout.setSpacing(4)
+
+        stack = QStackedWidget()
+        stack.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+
+        button_group = QButtonGroup(card)
+        button_group.setExclusive(True)
+        self._common_tab_group = button_group
+        self._common_tab_buttons: list[QPushButton] = []
+
+        def _add_tab(label: str, page: QWidget) -> None:
+            page_index = stack.addWidget(page)
+            button = QPushButton(label)
+            button.setObjectName("SettingsTabButton")
+            button.setCheckable(True)
+            button.setCursor(Qt.PointingHandCursor)
+            button.setProperty("selected", False)
+            button.clicked.connect(lambda _checked=False, idx=page_index: self._activate_common_tab(idx))
+            button_group.addButton(button, page_index)
+            tab_bar_layout.addWidget(button)
+            self._common_tab_buttons.append(button)
+
+        _add_tab("资源", self._build_common_tab_page(resource_rows))
+        _add_tab("路线与颜色", self._build_common_tab_page(route_rows))
+        _add_tab("快捷键", self._build_common_tab_page(interaction_rows))
+        _add_tab("参数", self._build_common_tab_page_fields(param_fields))
+
+        tab_bar_layout.addStretch(1)
+        card_layout.addWidget(tab_bar)
+        card_layout.addWidget(stack, stretch=1)
+
+        self._common_stack = stack
+        if self._common_tab_buttons:
+            self._activate_common_tab(0)
+        return card
+
+    @staticmethod
+    def _build_common_tab_page(rows: tuple[QWidget, ...]) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 4, 0, 0)
+        layout.setSpacing(10)
+        for row in rows:
+            layout.addWidget(row)
+        layout.addStretch(1)
+        return page
+
+    def _build_common_tab_page_fields(self, fields: list[Field]) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 4, 0, 0)
+        layout.setSpacing(10)
+        outer = QHBoxLayout()
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(18)
+        for chunk in self._split_in_halves(fields):
+            col = QVBoxLayout()
+            col.setSpacing(10)
+            for field in chunk:
+                col.addLayout(self._build_field(field, narrow_editor=True))
+            col.addStretch()
+            outer.addLayout(col, stretch=1)
+        layout.addLayout(outer)
+        layout.addStretch(1)
+        return page
+
+    def _activate_common_tab(self, index: int) -> None:
+        if not hasattr(self, "_common_stack") or self._common_stack is None:
+            return
+        self._common_stack.setCurrentIndex(index)
+        for i, button in enumerate(self._common_tab_buttons):
+            selected = i == index
+            button.setChecked(selected)
+            button.setProperty("selected", selected)
+            button.style().unpolish(button)
+            button.style().polish(button)
+
     def _build_message_section(self, title: str, message: str) -> QFrame:
         card = QFrame()
         card.setObjectName("PanelCard")
@@ -707,16 +1023,6 @@ class SettingsDialog(QDialog):
     def _split_in_halves(fields: list[Field]) -> list[list[Field]]:
         mid = (len(fields) + 1) // 2
         return [fields[:mid], fields[mid:]]
-
-    @staticmethod
-    def _build_common_extra(*widgets: QWidget) -> QWidget:
-        container = QWidget()
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-        for widget in widgets:
-            layout.addWidget(widget)
-        return container
 
     @staticmethod
     def _normalize_route_color(value: object, default: str = _DEFAULT_ROUTE_COLOR_HEX) -> str:
@@ -895,15 +1201,21 @@ class SettingsDialog(QDialog):
                 f"max-height: {_ROUTE_COLOR_BUTTON_HEIGHT}px; padding: 0;"
             )
             if disabled:
-                button.setStyleSheet(
-                    f"background: {color}; color: rgba(20, 20, 20, 0.42); "
-                    f"border: 1px solid rgba(20, 20, 20, 0.18); {size_style}{decoration}"
+                button_qss = (
+                    f"QPushButton {{ background: {color}; color: rgba(20, 20, 20, 0.42); "
+                    f"border: 1px solid rgba(20, 20, 20, 0.18); {size_style}{decoration} }}"
                 )
             else:
-                button.setStyleSheet(
-                    f"background: {color}; color: {text_color}; border: 1px solid {border_color}; "
-                    f"{size_style}{decoration}"
+                button_qss = (
+                    f"QPushButton {{ background: {color}; color: {text_color}; "
+                    f"border: 1px solid {border_color}; {size_style}{decoration} }}"
                 )
+            tooltip_qss = (
+                f"QToolTip {{ background: {color}; color: {text_color}; "
+                f"border: 1px solid {border_color}; border-radius: 5px; "
+                f"padding: 1px 6px; margin: 0px; font-size: 11px; }}"
+            )
+            button.setStyleSheet(f"{button_qss}\n{tooltip_qss}")
         self._route_default_color = self._route_colors["ROUTE_DEFAULT_COLOR"]
 
     def _show_pointer_arrow_context_menu(self, pos: QPoint) -> None:
@@ -1028,7 +1340,7 @@ class SettingsDialog(QDialog):
         label.setToolTip("保存后需要重启生效")
         layout.addWidget(label)
 
-        current = config.normalize_map_file(getattr(config, "MAP_FILE", config.DEFAULT_CONFIG.get("MAP_FILE")))
+        current = config.normalize_map_file(getattr(config, "MAP_FILE", ""))
         current_dir = config.map_directory_for_file(current)
         dir_combo = QComboBox()
         dir_combo.setFixedHeight(28)
@@ -1067,7 +1379,7 @@ class SettingsDialog(QDialog):
 
     def _current_map_directory_from_combo(self) -> str:
         if self._map_dir_combo is None:
-            return config.map_directory_for_file(getattr(config, "MAP_FILE", config.DEFAULT_CONFIG.get("MAP_FILE")))
+            return config.map_directory_for_file(getattr(config, "MAP_FILE", ""))
         return config.normalize_map_directory(self._map_dir_combo.currentData())
 
     def _set_map_directory_value(self, directory: object) -> None:
@@ -1089,33 +1401,27 @@ class SettingsDialog(QDialog):
         rel = config.normalize_map_file(map_file)
         index = self._map_file_combo.findData(rel)
         if index < 0:
-            self._map_file_combo.addItem(f"missing: {config.map_display_name(rel)}", rel)
-            index = self._map_file_combo.findData(rel)
+            index = self._map_file_combo.findData("")
         if index >= 0:
             self._map_file_combo.setCurrentIndex(index)
 
     def _refresh_map_file_combo(self, preferred: object | None = None) -> None:
         if self._map_file_combo is None:
             return
-        current = config.normalize_map_file(
-            preferred if preferred is not None else self._map_file_combo.currentData()
-        )
-        if preferred is not None:
+        current = config.normalize_map_file(preferred if preferred is not None else self._map_file_combo.currentData())
+        if preferred is not None and current:
             self._set_map_directory_value(config.map_directory_for_file(current))
         self._map_file_combo.blockSignals(True)
         self._map_file_combo.clear()
+        self._map_file_combo.addItem(_MAP_FILE_PLACEHOLDER, "")
         files = config.available_map_files_in_directory(self._current_map_directory_from_combo())
         if files:
             for rel in files:
                 self._map_file_combo.addItem(config.map_display_name(rel), rel)
             if current not in files and os.path.isfile(config.resolve_app_path(current)):
                 self._map_file_combo.addItem(config.map_display_name(current), current)
-            elif current not in files:
-                current = files[0]
             self._map_file_combo.setEnabled(True)
         else:
-            fallback = current or config.DEFAULT_CONFIG.get("MAP_FILE", config.DEFAULT_MAP_FILE)
-            self._map_file_combo.addItem(config.map_display_name(fallback), fallback)
             self._map_file_combo.setEnabled(True)
         self._map_file_combo.blockSignals(False)
         self._select_map_file_combo_value(current)
@@ -1145,13 +1451,16 @@ class SettingsDialog(QDialog):
         if self._map_file_combo is None:
             return
         rel = config.normalize_map_file(map_file)
-        self._set_map_directory_value(config.map_directory_for_file(rel))
+        if rel:
+            self._set_map_directory_value(config.map_directory_for_file(rel))
         self._refresh_map_file_combo(rel)
 
     def _sync_map_file_tooltip(self) -> None:
         if self._map_file_combo is None:
             return
-        if not config.available_map_files():
+        if not self._map_file_combo.currentData():
+            self._map_file_combo.setToolTip("请先选择底图文件")
+        elif not config.available_map_files():
             self._map_file_combo.setToolTip("请把底图文件放入 maps 文件夹后重启")
         else:
             self._map_file_combo.setToolTip("保存后需要重启生效；自定义底图可能导致路线/标注偏移")
@@ -1172,11 +1481,9 @@ class SettingsDialog(QDialog):
         combo.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         current = config.selected_annotation_file_from_settings()
         files = config.available_annotation_files()
+        combo.addItem(_ANNOTATION_FILE_PLACEHOLDER, "")
         for rel in files:
             combo.addItem(config.annotation_display_name(rel), rel)
-        if current not in files:
-            prefix = "缺失：" if not os.path.isfile(config.resolve_app_path(current)) else ""
-            combo.addItem(f"{prefix}{config.annotation_display_name(current)}", current)
         self._annotation_file_combo = combo
         self._initial_values["ANNOTATION_FILE"] = current
         self._set_annotation_combo_value(current)
@@ -1218,16 +1525,36 @@ class SettingsDialog(QDialog):
         rel = config.normalize_annotation_file(annotation_file)
         index = self._annotation_file_combo.findData(rel)
         if index < 0:
-            self._annotation_file_combo.addItem(f"缺失：{config.annotation_display_name(rel)}", rel)
-            index = self._annotation_file_combo.findData(rel)
+            index = self._annotation_file_combo.findData("")
         if index >= 0:
             self._annotation_file_combo.setCurrentIndex(index)
+        self._sync_annotation_file_tooltip()
+
+    def _refresh_annotation_file_combo_preserving_selection(self) -> None:
+        if self._annotation_file_combo is None:
+            return
+        current = config.normalize_annotation_file(self._annotation_file_combo.currentData())
+        self._annotation_file_combo.blockSignals(True)
+        self._annotation_file_combo.clear()
+        self._annotation_file_combo.addItem(_ANNOTATION_FILE_PLACEHOLDER, "")
+        files = config.available_annotation_files()
+        for rel in files:
+            self._annotation_file_combo.addItem(config.annotation_display_name(rel), rel)
+        index = self._annotation_file_combo.findData(current)
+        if index < 0:
+            index = self._annotation_file_combo.findData("")
+        if index >= 0:
+            self._annotation_file_combo.setCurrentIndex(index)
+        self._annotation_file_combo.blockSignals(False)
         self._sync_annotation_file_tooltip()
 
     def _sync_annotation_file_tooltip(self) -> None:
         if self._annotation_file_combo is None:
             return
         rel = self._annotation_file_combo.currentData()
+        if not rel:
+            self._annotation_file_combo.setToolTip("请先选择标注文件；不选择则不显示标注")
+            return
         path = config.resolve_app_path(rel)
         if path and os.path.isfile(path):
             self._annotation_file_combo.setToolTip("保存后用于地图标注显示和编辑")
@@ -1237,7 +1564,7 @@ class SettingsDialog(QDialog):
     def _build_minimap_row(self) -> QWidget:
         row = QWidget()
         layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 4, 6, 0)
+        layout.setContentsMargins(0, 0, 6, 0)
         layout.setSpacing(8)
 
         label = QLabel("小地图")
@@ -1324,9 +1651,9 @@ class SettingsDialog(QDialog):
             elif name == "问题反馈":
                 btn.setToolTip("查看问题反馈与交流方式")
                 btn.clicked.connect(self._on_feedback_clicked)
-            elif name == strings.ANNOTATION_REFRESH_POINTS:
-                btn.setToolTip(strings.ANNOTATION_REFRESH_POINTS_TOOLTIP)
-                btn.clicked.connect(self.annotation_refresh_requested.emit)
+            elif name == "标注转换":
+                btn.setToolTip("将旧标注坐标转换为当前标注坐标")
+                btn.clicked.connect(self._on_annotation_converter_clicked)
             elif name == "路线转换":
                 btn.setToolTip("批量把旧路线 JSON 另存为当前元数据格式")
                 btn.clicked.connect(self._on_route_converter_clicked)
@@ -1337,6 +1664,11 @@ class SettingsDialog(QDialog):
             card_layout.addWidget(btn)
         card_layout.addStretch()
         return card
+
+    def _on_annotation_converter_clicked(self) -> None:
+        dialog = AnnotationFormatConverterDialog(self)
+        center_dialog(dialog, self)
+        dialog.exec()
 
     def _on_route_converter_clicked(self) -> None:
         dialog = RouteFormatConverterDialog(self)
@@ -1675,9 +2007,7 @@ class SettingsDialog(QDialog):
         try:
             route_mgr = getattr(parent, "route_mgr", None)
             if route_mgr is not None:
-                route_mgr._annotation_points_cache = None
-                route_mgr._point_icon_cache.clear()
-                route_mgr._annotation_icon_cache.clear()
+                route_mgr.invalidate_annotation_cache(icons=True)
         except Exception:
             pass
         controller = getattr(parent, "route_panel_controller", None)
@@ -1779,12 +2109,10 @@ class SettingsDialog(QDialog):
 
         if self._map_file_combo is not None:
             selected_map = self._map_file_combo.currentData()
-            if selected_map:
-                result["MAP_FILE"] = config.normalize_map_file(selected_map)
+            result["MAP_FILE"] = config.normalize_map_file(selected_map)
         if self._annotation_file_combo is not None:
             selected_annotation = self._annotation_file_combo.currentData()
-            if selected_annotation:
-                result["ANNOTATION_FILE"] = config.normalize_annotation_file(selected_annotation)
+            result["ANNOTATION_FILE"] = config.normalize_annotation_file(selected_annotation)
 
         if self._route_multi_color_checkbox is not None:
             result["ROUTE_MULTI_COLOR_ENABLED"] = self._route_multi_color_checkbox.isChecked()
@@ -1906,8 +2234,8 @@ class SettingsDialog(QDialog):
         self._reset_hotkey_to_default()
         for key, editor in self._opacity_editors.items():
             editor.setText(str(config.DEFAULT_CONFIG.get(key, 1.0)))
-        self._refresh_map_file_combo(config.DEFAULT_CONFIG.get("MAP_FILE", config.DEFAULT_MAP_FILE))
-        self._set_annotation_combo_value(config.DEFAULT_CONFIG.get("ANNOTATION_FILE", config.DEFAULT_ANNOTATION_FILE))
+        self._refresh_map_file_combo(config.DEFAULT_CONFIG.get("MAP_FILE", ""))
+        self._set_annotation_combo_value(config.DEFAULT_CONFIG.get("ANNOTATION_FILE", ""))
 
     def _is_on_title_bar(self, global_pos: QPoint) -> bool:
         local = self._title_bar.mapFromGlobal(global_pos)

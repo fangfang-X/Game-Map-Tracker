@@ -8,21 +8,38 @@ from PySide6.QtWidgets import QDialog, QLabel, QPushButton, QVBoxLayout, QWidget
 from ..design import strings
 from ..widgets.annotation_type_widgets import AnnotationGroupSection, build_annotation_type_button, group_annotation_types
 from ..widgets.factory import make_scroll_area
-from . import StyledDialogBase, center_dialog
+from . import StyledDialogBase, center_dialog, place_left_of, place_right_of
 
 
 class AnnotationTypePickerDialog(StyledDialogBase):
     _COLUMNS = 3
 
-    def __init__(self, parent, items: list[dict], current_type_id: str = "") -> None:
+    def __init__(
+        self,
+        parent,
+        items: list[dict],
+        current_type_id: str = "",
+        *,
+        include_clear: bool = False,
+    ) -> None:
         super().__init__(parent, strings.ANNOTATION_TYPE_PICKER_TITLE, min_width=560, max_width=560)
         self._items = list(items)
         self._current_type_id = str(current_type_id or "")
+        self._include_clear = bool(include_clear)
         self._selected: dict | None = None
         self._group_expanded = getattr(parent, "annotation_group_expanded", {})
         if not isinstance(self._group_expanded, dict):
             self._group_expanded = {}
         self._group_expanded_changed = getattr(parent, "_on_annotation_group_expanded_changed", None)
+
+        if self._include_clear:
+            clear_button = QPushButton(strings.ANNOTATION_TYPE_PICKER_CLEAR)
+            clear_button.setObjectName("AnnotationTypeRow")
+            clear_button.setProperty("selected", not bool(self._current_type_id))
+            clear_button.setCheckable(True)
+            clear_button.setChecked(not bool(self._current_type_id))
+            clear_button.clicked.connect(lambda _checked=False: self._select({"clear": True}))
+            self.shell_layout.addWidget(clear_button)
 
         if not self._items:
             empty = QLabel(strings.ANNOTATION_TYPE_PICKER_EMPTY)
@@ -95,9 +112,23 @@ class AnnotationTypePickerDialog(StyledDialogBase):
         return dict(self._selected) if self._selected is not None else None
 
 
-def open_annotation_type_picker(parent, items: list[dict], current_type_id: str = "") -> dict | None:
-    dialog = AnnotationTypePickerDialog(parent, items, current_type_id)
-    center_dialog(dialog, parent)
+def open_annotation_type_picker(
+    parent,
+    items: list[dict],
+    current_type_id: str = "",
+    *,
+    include_clear: bool = False,
+    placement: str = "center",
+    anchor: QWidget | None = None,
+) -> dict | None:
+    dialog = AnnotationTypePickerDialog(parent, items, current_type_id, include_clear=include_clear)
+    placement_anchor = anchor or parent
+    if placement == "left_of" and placement_anchor is not None:
+        place_left_of(dialog, placement_anchor)
+    elif placement == "right_of" and placement_anchor is not None:
+        place_right_of(dialog, placement_anchor)
+    else:
+        center_dialog(dialog, parent)
     if dialog.exec() == QDialog.Accepted:
         return dialog.selected_item()
     return None

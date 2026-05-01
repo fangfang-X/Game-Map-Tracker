@@ -27,12 +27,13 @@ PROTECTED_USER_PREFIXES = (
 )
 DEFAULT_EXCLUDES = {
     "app-manifest.json",
+    "big_map.png",
+    "big_map_17173.png",
     "installed-manifest.json",
     "update-job.json",
     "config.json.bak",
 }
-DEFAULT_DELETE_PATHS = ("big_map.png",)
-MAP_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
+DEFAULT_DELETE_PATHS: tuple[str, ...] = ()
 RUNTIME_CONFIG_STRING_KEYS = (
     "QUARK_DOWNLOAD_URL",
     "ROUTE_RESOURCE_URL",
@@ -84,11 +85,6 @@ def iter_release_files(root: Path, include_paths: set[str] | None = None):
             yield path, rel
             continue
         if rel in DEFAULT_EXCLUDES or is_user_data_path(rel):
-            continue
-        rel_lower = rel.casefold()
-        if rel_lower in {"big_map.png", "big_map_17173.png"}:
-            continue
-        if rel_lower.startswith("maps/") and Path(rel_lower).suffix in MAP_IMAGE_EXTENSIONS:
             continue
         yield path, rel
 
@@ -377,13 +373,13 @@ def main(argv: list[str] | None = None) -> int:
         "--delete",
         action="append",
         default=[],
-        help="可重复：声明更新安装时需要删除的旧文件；本版本默认包含 big_map.png。",
+        help="可重复：声明更新安装时需要删除的旧文件。",
     )
     parser.add_argument(
         "--include",
         action="append",
         default=[],
-        help="显式把默认受保护的发布路径加入清单，例如 maps/big_map_17173.png。",
+        help="显式把默认受保护的发布路径加入清单，例如 maps/custom.png。",
     )
     args = parser.parse_args(argv)
 

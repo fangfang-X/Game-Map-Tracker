@@ -213,6 +213,9 @@ def _build_body(window, root_layout: QVBoxLayout) -> None:
     window.map_view = MapView(window.route_mgr)
     window.map_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
     window.map_view.set_map(window.tracker.logic_map_bgr)
+    set_missing_map_notice_visible = getattr(window.map_view, "set_missing_map_notice_visible", None)
+    if callable(set_missing_map_notice_visible):
+        set_missing_map_notice_visible(not getattr(window.tracker, "map_available", True))
     window.map_view.relocate_requested.connect(window._on_relocate)
     window.map_view.manual_view_changed.connect(window._handle_manual_map_navigation)
     map_layout.addWidget(window.map_view, stretch=1)

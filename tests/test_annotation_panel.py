@@ -130,15 +130,86 @@ class AnnotationPanelTests(unittest.TestCase):
 
         top_sections = self._top_sections(panel)
         self.assertEqual([section.group_name for section in top_sections], ["标注", "标注方案预设"])
-        self.assertEqual([section.header.text() for section in top_sections], ["▾ 标注", "▾ 标注方案预设"])
+        self.assertEqual(top_sections[0].header.text(), "▾ 标注")
+        self.assertEqual(top_sections[1].header_label.text(), "▾ 标注方案预设")
         self.assertTrue(all(section.header.property("compact") for section in top_sections))
         self.assertEqual([section.property("annotationLayer") for section in top_sections], ["pulled", "custom"])
         self.assertEqual([section.header.property("annotationLayer") for section in top_sections], ["pulled", "custom"])
+        self.assertIsNotNone(top_sections[1].add_btn)
 
         pulled_groups = self._nested_sections(top_sections[0])
         custom_groups = self._nested_sections(top_sections[1])
         self.assertEqual([section.group_name for section in pulled_groups], ["Group A", "Group B"])
         self.assertEqual(custom_groups, [])
+
+    def test_preset_add_button_emits_create_request(self) -> None:
+        panel = self._panel_with_types()
+        emitted: list[bool] = []
+        panel.preset_create_requested.connect(lambda: emitted.append(True))
+        panel._render()
+
+        custom_section = self._top_sections(panel)[1]
+        custom_section.add_btn.click()
+
+        self.assertEqual(emitted, [True])
+
+    def test_preset_row_renders_actions_and_emits_edit_delete(self) -> None:
+        panel = self._panel_with_types()
+        panel.set_presets([{"id": "preset-1", "name": "Preset A", "type_ids": ["a-1", "b-1"]}])
+        edited: list[str] = []
+        deleted: list[str] = []
+        panel.preset_edit_requested.connect(lambda preset_id: edited.append(preset_id))
+        panel.preset_delete_requested.connect(lambda preset_id: deleted.append(preset_id))
+
+        custom_section = self._top_sections(panel)[1]
+        row = self._section_rows(custom_section)[0]
+        buttons = row.findChildren(QPushButton)
+
+        self.assertEqual([button.text() for button in buttons], ["Preset A", "全选", "反选", "修改", "删除"])
+
+        buttons[3].click()
+        buttons[4].click()
+
+        self.assertEqual(edited, ["preset-1"])
+        self.assertEqual(deleted, ["preset-1"])
+
+    def test_preset_name_click_toggles_only_available_preset_types(self) -> None:
+        panel = self._panel_with_types()
+        panel.set_preferences(["b-1"])
+        panel.set_presets([{"id": "preset-1", "name": "Preset A", "type_ids": ["a-1", "missing"]}])
+        emitted: list[list[str]] = []
+        panel.selection_changed.connect(lambda ids: emitted.append(list(ids)))
+
+        custom_section = self._top_sections(panel)[1]
+        name_button = self._section_rows(custom_section)[0].findChildren(QPushButton)[0]
+        name_button.click()
+
+        self.assertEqual(emitted[-1], ["b-1", "a-1"])
+
+        custom_section = self._top_sections(panel)[1]
+        name_button = self._section_rows(custom_section)[0].findChildren(QPushButton)[0]
+        name_button.click()
+
+        self.assertEqual(emitted[-1], ["b-1"])
+
+    def test_preset_select_all_and_invert_affect_only_preset_types(self) -> None:
+        panel = self._panel_with_types()
+        panel.set_preferences(["a-1", "b-1"])
+        panel.set_presets([{"id": "preset-1", "name": "Preset A", "type_ids": ["a-1", "a-2"]}])
+        emitted: list[list[str]] = []
+        panel.selection_changed.connect(lambda ids: emitted.append(list(ids)))
+
+        custom_section = self._top_sections(panel)[1]
+        buttons = self._section_rows(custom_section)[0].findChildren(QPushButton)
+        buttons[1].click()
+
+        self.assertEqual(emitted[-1], ["a-1", "b-1", "a-2"])
+
+        custom_section = self._top_sections(panel)[1]
+        buttons = self._section_rows(custom_section)[0].findChildren(QPushButton)
+        buttons[2].click()
+
+        self.assertEqual(emitted[-1], ["b-1"])
 
     def test_outer_group_header_click_collapses_without_rerender(self) -> None:
         saved_states: list[dict[str, bool]] = []

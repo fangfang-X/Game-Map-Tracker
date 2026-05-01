@@ -194,6 +194,20 @@ class RouteGuideTests(unittest.TestCase):
 
             draw_arrows.assert_called_once()
 
+    def test_draw_on_route_nodes_use_numeric_order_label(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = _manager_with_visible_route(Path(tmp))
+            manager.route_for_id("2026010101")["points"][0]["label"] = "宝箱 99"
+            canvas = np.zeros((180, 180, 3), dtype=np.uint8)
+
+            with patch("cv2.putText", wraps=__import__("cv2").putText) as put_text:
+                manager.draw_on(canvas, 0, 0, 180, auto_visit=False)
+
+            labels = [call.args[1] for call in put_text.call_args_list]
+            self.assertIn("1", labels)
+            self.assertIn("2", labels)
+            self.assertNotIn("宝箱 99", labels)
+
     def test_config_opacity_clamps_invalid_values(self) -> None:
         with patch("config.ROUTE_VISITED_ICON_OPACITY", 0.35):
             self.assertEqual(_config_opacity("ROUTE_VISITED_ICON_OPACITY", 1.0), 0.35)
@@ -838,7 +852,48 @@ class RouteGuideTests(unittest.TestCase):
             payload = json.loads(route_file.read_text(encoding="utf-8"))
             self.assertEqual(payload["points"][0]["typeId"], "flower")
             self.assertEqual(payload["points"][0]["type"], "向阳花")
+            self.assertEqual(payload["points"][0]["label"], "向阳花 1")
             self.assertNotIn("visited", payload["points"][0])
+
+    def test_route_point_mutations_refresh_auto_labels_without_overwriting_manual_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            category = base / "采集"
+            category.mkdir()
+            route_file = category / "路线.json"
+            route_file.write_text(
+                json.dumps(
+                    {
+                        "id": "2026010101",
+                        "name": "路线",
+                        "points": [
+                            {"x": 1, "y": 2, "label": "宝箱 9", "typeId": "chest", "type": "宝箱"},
+                            {"x": 3, "y": 4, "label": "手写", "typeId": "ore", "type": "矿石"},
+                            {"x": 5, "y": 6, "node_type": "teleport"},
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            manager = RouteManager(str(base))
+
+            self.assertTrue(manager.set_point_annotation("2026010101", 1, "chest", "宝箱"))
+            payload = json.loads(route_file.read_text(encoding="utf-8"))
+            self.assertEqual([point.get("label") for point in payload["points"]], ["宝箱 1", "手写", "传送点 1"])
+
+            self.assertTrue(manager.clear_point_annotation("2026010101", 0))
+            payload = json.loads(route_file.read_text(encoding="utf-8"))
+            self.assertEqual([point.get("label") for point in payload["points"]], ["节点 1", "手写", "传送点 1"])
+
+            self.assertTrue(manager.reorder_route_point("2026010101", 2, 0))
+            payload = json.loads(route_file.read_text(encoding="utf-8"))
+            self.assertEqual([point.get("label") for point in payload["points"]], ["传送点 1", "节点 2", "手写"])
+
+            outcomes = manager.delete_points_from_routes({"2026010101": [1]})
+            payload = json.loads(route_file.read_text(encoding="utf-8"))
+            self.assertEqual(outcomes["2026010101"], [1])
+            self.assertEqual([point.get("label") for point in payload["points"]], ["传送点 1", "手写"])
 
     def test_save_route_points_writes_loop_flag(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -866,6 +921,67 @@ class RouteGuideTests(unittest.TestCase):
 
             self.assertTrue(manager.save_route_points("2026010101", points, loop=False))
             self.assertFalse(json.loads(route_file.read_text(encoding="utf-8"))["loop"])
+
+    def test_save_route_points_preserves_progress_in_progress_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            category = base / "采集"
+            category.mkdir()
+            route_file = category / "路线.json"
+            route_file.write_text(
+                json.dumps(
+                    {
+                        "id": "2026010101",
+                        "name": "路线",
+                        "points": [{"x": 1, "y": 2}, {"x": 3, "y": 4}],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            manager = RouteManager(str(base))
+            points = manager.route_for_id("2026010101")["points"]
+            points[1]["visited"] = True
+            points[0]["label"] = "起点"
+
+            self.assertTrue(manager.save_route_points("2026010101", points))
+
+            route_payload = json.loads(route_file.read_text(encoding="utf-8"))
+            self.assertNotIn("visited", route_payload["points"][1])
+            self.assertEqual(json.loads((base / "progress.json").read_text(encoding="utf-8")), {"2026010101": [1]})
+            self.assertTrue(manager.point_visited("2026010101", 1))
+
+    def test_save_route_points_auto_labels_missing_and_typed_nodes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            category = base / "采集"
+            category.mkdir()
+            route_file = category / "路线.json"
+            route_file.write_text(
+                json.dumps({"id": "2026010101", "name": "路线", "points": []}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            manager = RouteManager(str(base))
+
+            self.assertTrue(
+                manager.save_route_points(
+                    "2026010101",
+                    [
+                        {"x": 1, "y": 2, "typeId": "flower", "type": "向阳花"},
+                        {"x": 3, "y": 4, "typeId": "flower", "type": "向阳花"},
+                        {"x": 5, "y": 6, "node_type": "collect"},
+                        {"x": 7, "y": 8, "label": "手写名", "node_type": "collect"},
+                        {"x": 9, "y": 10},
+                    ],
+                )
+            )
+
+            payload = json.loads(route_file.read_text(encoding="utf-8"))
+            self.assertEqual(
+                [point.get("label") for point in payload["points"]],
+                ["向阳花 1", "向阳花 2", "采集点 1", "手写名", "节点 5"],
+            )
+            self.assertFalse(any("display_order" in point for point in payload["points"]))
 
     def test_set_point_annotation_rejects_invalid_inputs_without_writing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1200,6 +1316,109 @@ class RouteGuideTests(unittest.TestCase):
             self.assertIsNotNone(hit)
             self.assertEqual(hit["typeId"], "flower")
             self.assertEqual(hit["pointIndex"], 1)
+
+    def test_annotation_spatial_index_filters_visible_rect_and_invalidates(self) -> None:
+        manager = RouteManager.__new__(RouteManager)
+        manager._annotation_points_cache = {
+            "flower": [
+                {"x": 10, "y": 10, "typeId": "flower"},
+                {"x": 500, "y": 500, "typeId": "flower"},
+            ],
+            "ore": [{"x": 20, "y": 20, "typeId": "ore"}],
+        }
+        manager._annotation_spatial_index = None
+        manager._annotation_icon_cache = {}
+        manager._point_icon_cache = {}
+        manager._point_icon_index = None
+        manager._annotation_type_ids = {"flower"}
+
+        entries = manager._annotation_entries_in_rect(0, 0, 100, 100)
+
+        self.assertEqual([(entry.type_id, entry.point_index) for entry in entries], [("flower", 0)])
+        self.assertIsNotNone(manager._annotation_spatial_index)
+
+        manager.invalidate_annotation_cache()
+
+        self.assertIsNone(manager._annotation_points_cache)
+        self.assertIsNone(manager._annotation_spatial_index)
+
+    def test_draw_annotations_clusters_far_zoom_overlapping_points(self) -> None:
+        manager = RouteManager.__new__(RouteManager)
+        manager._annotation_points_cache = {
+            "flower": [
+                {"x": 100, "y": 100, "typeId": "flower"},
+                {"x": 110, "y": 108, "typeId": "flower"},
+            ]
+        }
+        manager._annotation_spatial_index = None
+        manager._annotation_type_ids = {"flower"}
+        manager._annotation_icon_cache = {"flower": np.full((20, 20, 4), 255, dtype=np.uint8)}
+        canvas = np.zeros((120, 120, 3), dtype=np.uint8)
+
+        manager._draw_annotations(
+            canvas,
+            0,
+            0,
+            120,
+            120,
+            viewport_width=480,
+            viewport_height=480,
+            scale_x=0.25,
+            scale_y=0.25,
+            map_pixels_per_screen_px=4.0,
+        )
+
+        self.assertTrue(np.any(canvas))
+        self.assertGreater(canvas[26, 26].sum(), 0)
+
+    def test_draw_annotations_near_zoom_draws_single_icons(self) -> None:
+        manager = RouteManager.__new__(RouteManager)
+        manager._annotation_points_cache = {
+            "flower": [
+                {"x": 20, "y": 20, "typeId": "flower"},
+                {"x": 90, "y": 90, "typeId": "flower"},
+            ]
+        }
+        manager._annotation_spatial_index = None
+        manager._annotation_type_ids = {"flower"}
+        icon = np.zeros((20, 20, 4), dtype=np.uint8)
+        icon[:, :, 1] = 255
+        icon[:, :, 3] = 255
+        manager._annotation_icon_cache = {"flower": icon}
+        canvas = np.zeros((120, 120, 3), dtype=np.uint8)
+
+        manager._draw_annotations(
+            canvas,
+            0,
+            0,
+            120,
+            120,
+            viewport_width=120,
+            viewport_height=120,
+            scale_x=1.0,
+            scale_y=1.0,
+            map_pixels_per_screen_px=1.0,
+        )
+
+        self.assertEqual(int(canvas[20, 20, 1]), 255)
+        self.assertEqual(int(canvas[90, 90, 1]), 255)
+
+    def test_hit_test_annotation_point_uses_spatial_index_and_returns_nearest(self) -> None:
+        manager = RouteManager.__new__(RouteManager)
+        manager._annotation_points_cache = {
+            "flower": [
+                {"x": 100, "y": 100, "typeId": "flower"},
+                {"x": 104, "y": 103, "typeId": "flower"},
+                {"x": 900, "y": 900, "typeId": "flower"},
+            ]
+        }
+        manager._annotation_spatial_index = None
+        manager._annotation_type_ids = {"flower"}
+
+        hit = manager.hit_test_annotation_point(105, 104, 8)
+
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit["pointIndex"], 1)
 
     def test_change_annotation_point_type_moves_point_and_updates_counts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

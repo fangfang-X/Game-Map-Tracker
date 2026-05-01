@@ -1,8 +1,17 @@
+import os
+import tempfile
 import unittest
 from enum import Enum
 from unittest.mock import patch
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtCore import QSize
+from PySide6.QtGui import QColor, QPixmap
+from PySide6.QtWidgets import QApplication, QPushButton, QWidget
+
 from ui_island.controllers.route_panel_controller import RoutePanelController
+from ui_island.dialogs.route_notes_dialog import _NODE_ICON_SIZE
 from ui_island.state import RouteDrawingState
 
 
@@ -300,11 +309,41 @@ class _FakeWindow:
     def _on_relocate(self, x: int, y: int) -> None:
         self.relocate_calls.append((x, y))
 
+    def frameGeometry(self):
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            return screen.availableGeometry()
+        from PySide6.QtCore import QRect
+
+        return QRect(0, 0, 800, 600)
+
+
+class _ToolbarHost(QWidget):
+    def __init__(self) -> None:
+        super().__init__()
+        self.search_input = _FakeSearchInput("")
+        self._route_sections: dict[str, _FakeSection] = {}
+        self._route_widgets_by_category: dict[str, list[tuple[str, str, _FakeRouteItem]]] = {}
+        self._route_checkboxes: dict[str, list[_FakeCheckbox]] = {}
+        self.tracked_refreshed_count = 0
+        self.route_mgr = _FakeRouteManager()
+        self.map_view = _FakeMapView()
+        self.route_drawing_state = RouteDrawingState()
+        self.resize(800, 600)
+
+    def isMaximized(self) -> bool:
+        return False
+
 
 class RoutePanelFilterTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._app = QApplication.instance() or QApplication([])
+
     def _controller_for(self, window: _FakeWindow) -> RoutePanelController:
         controller = RoutePanelController.__new__(RoutePanelController)
         controller.window = window
+        controller._route_notes_session = None
         controller.refresh_tracked_routes = lambda: setattr(
             window,
             "tracked_refreshed_count",
@@ -389,12 +428,16 @@ class RoutePanelFilterTests(unittest.TestCase):
         controller = self._controller_for(window)
 
         with (
-            patch("ui_island.controllers.route_panel_controller.edit_route_notes", return_value=(True, "old", "#112233")),
+            patch(
+                "ui_island.controllers.route_panel_controller.edit_route_notes",
+                return_value=(True, "old", "#112233", False, [{"x": 1, "y": 2}]),
+            ),
             patch("ui_island.controllers.route_panel_controller.toast"),
         ):
             controller.show_route_notes_dialog("矿物", "矿线")
 
         self.assertEqual(window.route_mgr.saved_notes_calls, [("矿物", "矿线", "old", "#112233")])
+        self.assertEqual(window.route_mgr.saved_points_calls, [])
         self.assertIn("rgb(17, 34, 51)", checkbox.stylesheets[-1])
         self.assertEqual(window.map_view.refresh_count, 1)
 
@@ -413,12 +456,71 @@ class RoutePanelFilterTests(unittest.TestCase):
         controller = self._controller_for(window)
 
         with (
-            patch("ui_island.controllers.route_panel_controller.edit_route_notes", return_value=(True, "new", "#112233")),
+            patch(
+                "ui_island.controllers.route_panel_controller.edit_route_notes",
+                return_value=(True, "new", "#112233", False, []),
+            ),
             patch("ui_island.controllers.route_panel_controller.toast"),
         ):
             controller.show_route_notes_dialog("矿物", "矿线")
 
         self.assertEqual(window.route_mgr.saved_notes_calls, [("矿物", "矿线", "new", "#112233")])
+        self.assertEqual(window.route_mgr.saved_points_calls, [])
+        self.assertEqual(window.map_view.refresh_count, 1)
+
+    def test_route_notes_dialog_saves_node_changes_without_notes_change(self) -> None:
+        window = _FakeWindow("")
+        window.route_mgr = _FakeRouteManager({
+            "route-1": {
+                "id": "route-1",
+                "category": "矿物",
+                "display_name": "矿线",
+                "notes": "old",
+                "points": [{"x": 1, "y": 2, "label": "A"}, {"x": 3, "y": 4, "label": "B"}],
+            }
+        })
+        controller = self._controller_for(window)
+        edited_nodes = [{"x": 3, "y": 4, "label": "B"}, {"x": 1, "y": 2, "label": "A2"}]
+
+        with (
+            patch(
+                "ui_island.controllers.route_panel_controller.edit_route_notes",
+                return_value=(True, "old", None, True, edited_nodes),
+            ),
+            patch("ui_island.controllers.route_panel_controller.toast"),
+        ):
+            controller.show_route_notes_dialog("矿物", "矿线")
+
+        self.assertEqual(window.route_mgr.saved_notes_calls, [])
+        self.assertEqual(window.route_mgr.saved_points_calls, [("route-1", edited_nodes, None)])
+        self.assertEqual(window.route_mgr.routes["route-1"]["points"], edited_nodes)
+        self.assertEqual(window.map_view.refresh_count, 1)
+
+    def test_route_notes_dialog_saves_notes_and_nodes_together(self) -> None:
+        window = _FakeWindow("")
+        window.route_mgr = _FakeRouteManager({
+            "route-1": {
+                "id": "route-1",
+                "category": "矿物",
+                "display_name": "矿线",
+                "notes": "old",
+                "points": [{"x": 1, "y": 2}],
+            }
+        })
+        controller = self._controller_for(window)
+        edited_nodes = [{"x": 1, "y": 2, "typeId": "ore", "type": "矿石"}]
+
+        with (
+            patch(
+                "ui_island.controllers.route_panel_controller.edit_route_notes",
+                return_value=(True, "new", "#112233", True, edited_nodes),
+            ),
+            patch("ui_island.controllers.route_panel_controller.toast"),
+        ):
+            controller.show_route_notes_dialog("矿物", "矿线")
+
+        self.assertEqual(window.route_mgr.saved_notes_calls, [("矿物", "矿线", "new", "#112233")])
+        self.assertEqual(window.route_mgr.saved_points_calls, [("route-1", edited_nodes, None)])
         self.assertEqual(window.map_view.refresh_count, 1)
 
 
@@ -1135,6 +1237,67 @@ class RoutePanelFilterTests(unittest.TestCase):
         self.assertFalse(window.route_drawing_toolbar_buttons["insert_at_end"].checked)
         self.assertEqual(window.route_drawing_toolbar_buttons["insert_at_end"].blocked_states, [True, False])
         self.assertTrue(window.route_drawing_toolbar.shown)
+
+    def test_route_drawing_toolbar_node_panel_uses_right_picker_and_small_icons(self) -> None:
+        window = _ToolbarHost()
+        window.route_drawing_state.begin(
+            route_id="2026010101",
+            category="routes",
+            name="route",
+            points=[{"x": 1, "y": 2, "typeId": "ore", "type": "鐭跨煶"}],
+        )
+        window.route_mgr = _FakeRouteManager({"2026010101": {"points": []}})
+        window.route_mgr.annotation_type_items = lambda: [{"typeId": "ore", "type": "鐭跨煶"}]
+        controller = self._controller_for(window)
+
+        controller._ensure_route_drawing_toolbar()
+        controller._update_route_drawing_toolbar()
+        self._app.processEvents()
+
+        toolbar = window.route_drawing_toolbar
+        node_panel = window.route_drawing_node_panel
+        stats = node_panel.findChild(QWidget, "RouteNotesStatsPanel")
+        stats_scroll = node_panel.findChild(QWidget, "RouteNotesStatsScroll")
+        node_scroll = node_panel.findChild(QWidget, "RouteNotesNodeScroll")
+        icons = node_panel.findChildren(QPushButton, "RouteNotesNodeIcon")
+        self.assertIs(node_panel._annotation_picker_anchor, toolbar)
+        self.assertEqual(node_panel._annotation_picker_placement, "right_of")
+        self.assertIsNotNone(stats)
+        self.assertIsNotNone(stats_scroll)
+        self.assertIsNotNone(node_scroll)
+        self.assertLess(stats_scroll.geometry().y(), node_scroll.geometry().y())
+        self.assertTrue(icons)
+        self.assertTrue(all(icon.iconSize() == QSize(_NODE_ICON_SIZE, _NODE_ICON_SIZE) for icon in icons))
+
+    def test_route_drawing_toolbar_node_panel_hydrates_annotation_icons(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            icon_path = os.path.join(tmpdir, "ore.png")
+            pixmap = QPixmap(_NODE_ICON_SIZE, _NODE_ICON_SIZE)
+            pixmap.fill(QColor("#00ff00"))
+            self.assertTrue(pixmap.save(icon_path))
+
+            window = _ToolbarHost()
+            window.route_drawing_state.begin(
+                route_id="2026010101",
+                category="routes",
+                name="route",
+                points=[{"x": 1, "y": 2, "typeId": "ore", "type": "Ore"}],
+            )
+            window.route_mgr = _FakeRouteManager({"2026010101": {"points": []}})
+            window.route_mgr.annotation_type_items = lambda: [{"typeId": "ore", "type": "Ore"}]
+            window.route_mgr.point_icon_path_for = lambda type_id: icon_path if type_id == "ore" else ""
+            controller = self._controller_for(window)
+
+            controller._ensure_route_drawing_toolbar()
+            controller._update_route_drawing_toolbar()
+            self._app.processEvents()
+
+            node_panel = window.route_drawing_node_panel
+            icons = node_panel.findChildren(QPushButton, "RouteNotesNodeIcon")
+            self.assertIs(node_panel._annotation_icon_path_provider, window.route_mgr.point_icon_path_for)
+            self.assertTrue(icons)
+            self.assertFalse(icons[0].property("fallbackIcon"))
+            self.assertNotIn("icon_path", node_panel.draft_nodes()[0])
 
     def test_jump_to_route_node_paused_relocates_to_first_valid_node(self) -> None:
         window = _FakeWindow("")

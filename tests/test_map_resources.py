@@ -6,8 +6,10 @@ import config
 
 
 class ConfigMapResourcesTests(unittest.TestCase):
-    def test_default_map_file_is_17173(self) -> None:
-        self.assertEqual(config.DEFAULT_MAP_FILE, "maps/卡洛西亚大陆/big_map_17173.png")
+    def test_default_map_file_is_unselected(self) -> None:
+        self.assertEqual(config.DEFAULT_MAP_FILE, "")
+        self.assertEqual(config.DEFAULT_CONFIG["MAP_FILE"], "")
+        self.assertNotIn("LOGIC_MAP_PATH", config.DEFAULT_CONFIG)
 
     def test_iter_map_files_lists_all_user_images(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -42,21 +44,6 @@ class ConfigMapResourcesTests(unittest.TestCase):
             self.assertEqual(rel, "maps/custom/source.png")
             self.assertTrue(Path(root, rel).exists())
             self.assertFalse(Path(root, "maps", "custom", "source_2.png").exists())
-
-    def test_cleanup_legacy_root_big_map_preserves_maps_folder(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root_map = Path(tmp, "big_map.png")
-            user_map = Path(tmp, "maps", "big_map.png")
-            user_map.parent.mkdir()
-            root_map.write_bytes(b"legacy")
-            user_map.write_bytes(b"user")
-
-            removed = config.cleanup_legacy_root_big_map(tmp)
-
-            self.assertTrue(removed)
-            self.assertFalse(root_map.exists())
-            self.assertEqual(user_map.read_bytes(), b"user")
-
 
 if __name__ == "__main__":
     unittest.main()
