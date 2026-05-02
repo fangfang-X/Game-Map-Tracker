@@ -1,14 +1,14 @@
 {
   "version": "0.1.5",
   "notes": "本次更新重要说明：对地图、标注、路线三者进行解耦，请用户自己手动选择地图和标注数据文件，地图文件放到根目录的maps对应地图的文件夹中，标注文件放到根目录的annotations对应地图的文件夹中！！！！！！！！！！！！！！！！！！！！仔细看说明仔细看说明仔细看说明看说明仔细看说明仔细看说明仔细看说明仔细看说明仔细看说明仔细看明！！！！！！！！！！更新不正常就直接从夸克下载更新不正常就直接从夸克下载更新不正常就直接从夸克下载更新不正常就直接从夸克下载更新不正常就直接从夸克下载更新不正常就直接从夸克下载更新不正常就直接从夸克下载!!!!!!!!!!优化路线绘制体验，设置窗口内置旧路线和旧标注数据的坐标转换以及自动为路线添加标注的功能",
-  "app_status": "notice",
-  "app_status_message": "仔细看说明仔细看说明",
+  "app_status": "normal",
+  "app_status_message": "",
   "app_notice_force_prompt": false,
   "min_supported_version": "",
   "min_supported_version_message": "",
   "requires_launcher_update": false,
   "prompt_update": true,
-  "force_update_prompt": true,
+  "force_update_prompt": false,
   "files": [
     {
       "path": "_internal/81d243bd2c585b0f4821__mypyc.cp314-win_amd64.pyd",
@@ -115,7 +115,7 @@
     {
       "path": "_internal/base_library.zip",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/_internal/base_library.zip",
-      "sha256": "5fbf26d705c7452f2152f38226fd192dd2a4781c419063177ba686998c501a52",
+      "sha256": "620d84491fc2a025f15c297c176ac8d0cb070bd1878879fa9d3bf7e3b41dfe5a",
       "size": 1388164
     },
     {
@@ -1601,6 +1601,12 @@
       "size": 258560
     },
     {
+      "path": "annotations/points_17173.json",
+      "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/annotations/points_17173.json",
+      "sha256": "5f9ee8e5324497bcc97f4f083f5c9cdeed7dc00a69141da9b34ce5e3b62bbd11",
+      "size": 783201
+    },
+    {
       "path": "config.json",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/config.json",
       "sha256": "30a229c36bd0958e9c94f45219875891705362e1cd1a6ee7fe5c70ac9731013a",
@@ -1610,14 +1616,8 @@
     {
       "path": "GMT-N.exe",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/GMT-N.exe",
-      "sha256": "51169b414225e3ce5df4ba9b6f1d922a130e337519736ac2075c3478e06bb49e",
-      "size": 8802255
-    },
-    {
-      "path": "annotations/points_17173.json",
-      "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/annotations/points_17173.json",
-      "sha256": "5f9ee8e5324497bcc97f4f083f5c9cdeed7dc00a69141da9b34ce5e3b62bbd11",
-      "size": 783201
+      "sha256": "0f8700e044b95115f82bdc5825feb186d62db1871f20d3bdc7bf22c3525d1c26",
+      "size": 8803092
     },
     {
       "path": "maps/README.md",
@@ -1642,12 +1642,6 @@
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/README.md",
       "sha256": "c9cf2bb3b60e7076b42415ca2071f2f4f7905ec980e683d16beaf93213bd027a",
       "size": 3968
-    },
-    {
-      "path": "updater.exe",
-      "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/updater.exe",
-      "sha256": "53193913dfdb1069f2ace406626051e7420ca9064ddd8760cde5dae08aa663d6",
-      "size": 8520726
     },
     {
       "path": "tools/points_icon/17310030001.png",
@@ -2154,10 +2148,10 @@
       "size": 19494
     },
     {
-      "path": "_internal/tools/points_icon/icons.json",
-      "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/_internal/tools/points_icon/icons.json",
-      "sha256": "37588d17c5845681e80027d31639d724bdfede23206a92c03315b067853ef8fa",
-      "size": 19494
+      "path": "updater.exe",
+      "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/updater.exe",
+      "sha256": "916e8a72ca050a1fa44c0adbf2d834fad7cc819db9aa9cf9a166a0c4592c9f89",
+      "size": 8521539
     }
   ],
   "delete": [
