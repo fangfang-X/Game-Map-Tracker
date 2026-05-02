@@ -368,7 +368,7 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
             self,
             "资源兼容提醒",
             "\n".join(f"- {message}" for message in messages)
-            + "\n\n路线或标注可能偏移,请前往设置窗口进行路线转换",
+            + "\n\n若提示路线格式版本不兼容或缺失，请前往设置窗口进行路线转换。",
         )
 
     def _show_missing_map_notice(self) -> None:
@@ -1117,8 +1117,15 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
         self.terminate_nav_btn.setVisible(visible)
         self.lock_btn.setVisible(visible)
 
+    def _is_unlock_only_lock_mode(self) -> bool:
+        return self._mode in {
+            WindowMode.PAUSED,
+            WindowMode.MAXIMIZED,
+            WindowMode.TRACKING_LOST,
+        }
+
     def _can_toggle_lock(self) -> bool:
-        return self._mode in _STABLE_FAMILY
+        return self._mode in _STABLE_FAMILY or self._is_unlock_only_lock_mode()
 
     def _sync_route_point_drag_enabled(self) -> None:
         mode_enum = self._mode.__class__
@@ -1303,6 +1310,12 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
 
     def toggle_lock(self) -> None:
         if not self._can_toggle_lock():
+            return
+        if self._is_unlock_only_lock_mode():
+            self._preferred_locked = False
+            self._lock_state_before_lost = None
+            self._restore_lock_after_relocate = None
+            self._set_locked_state(False)
             return
         self._preferred_locked = not self._locked
         self._set_locked_state(self._preferred_locked)

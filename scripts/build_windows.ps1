@@ -111,9 +111,13 @@ try {
         Copy-DirectoryFresh "routes" (Join-Path $Dist "routes")
     }
 
+    if (Test-Path "annotations") {
+        Copy-DirectoryFresh "annotations" (Join-Path $Dist "annotations")
+    }
+
     $ToolsDist = Join-Path $Dist "tools"
     New-Item -ItemType Directory -Force -Path $ToolsDist | Out-Null
-    foreach ($folder in @("points_all", "points_get", "points_icon")) {
+    foreach ($folder in @("points_get", "points_icon")) {
         $source = Join-Path "tools" $folder
         if (Test-Path $source) {
             Copy-DirectoryFresh $source (Join-Path $ToolsDist $folder)

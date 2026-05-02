@@ -84,6 +84,7 @@ class TrackingController:
             return
         mode_enum = self.window._mode.__class__
         self.window._mode_before_max = None
+        self.window._lock_state_before_lost = None
         self.window._tracking_bootstrap_pending = True
         self.window.window_mode_controller.sync_normal_minimum_height()
         self.window.setMinimumHeight(self.window._normal_minimum_height)
@@ -95,6 +96,7 @@ class TrackingController:
         mode_enum = self.window._mode.__class__
         self.window._mode_before_max = None
         self.window._restore_lock_after_relocate = None
+        self.window._lock_state_before_lost = None
         self.window._tracking_paused_state = TrackState.SEARCHING
         self.window._tracking_bootstrap_pending = False
         self.window.window_mode_controller.enter_mode(mode_enum.PAUSED)
@@ -127,7 +129,10 @@ class TrackingController:
             self.window._tracking_bootstrap_pending = False
 
         if self.window._mode in (mode_enum.PAUSED, mode_enum.MAXIMIZED):
-            self.restore_lock_state_after_lost()
+            self.window._lock_state_before_lost = None
+            if self.window._locked:
+                self.window._set_locked_state(False)
+            self.window._update_lock_button_visibility()
             self.set_alert_mode(False)
             drawing = getattr(self.window, "route_drawing_state", None)
             if drawing is not None and drawing.active:

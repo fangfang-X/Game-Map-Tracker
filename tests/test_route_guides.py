@@ -837,28 +837,50 @@ class RouteGuideTests(unittest.TestCase):
 
             self.assertEqual(manager.route_enable_versions("2026010101"), ["old-format"])
 
-    def test_route_and_annotation_warnings_only_check_current_enable_version(self) -> None:
+    def test_route_and_annotation_warnings_check_route_format_version_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             category = base / "routes"
             category.mkdir()
-            (category / "missing.json").write_text(
-                json.dumps({"id": "2026010101", "name": "missing", "points": []}),
-                encoding="utf-8",
-            )
-            (category / "unsupported.json").write_text(
+            (category / "compatible.json").write_text(
                 json.dumps(
-                    {"id": "2026010102", "name": "unsupported", "enable_versions": ["old-format"], "points": []},
+                    {
+                        "id": "2026010101",
+                        "format_version": resource_metadata.APP_FORMAT_VERSION,
+                        "enable_versions": ["old-format"],
+                        "name": "compatible",
+                        "points": [],
+                    },
                     ensure_ascii=False,
                 ),
                 encoding="utf-8",
             )
-            manager = RouteManager(str(base))
+            (category / "unsupported.json").write_text(
+                json.dumps(
+                    {
+                        "id": "2026010102",
+                        "format_version": "old-format",
+                        "enable_versions": [resource_metadata.APP_FORMAT_VERSION],
+                        "name": "unsupported",
+                        "points": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (category / "missing.json").write_text(
+                json.dumps({"id": "2026010103", "name": "missing", "points": []}),
+                encoding="utf-8",
+            )
+            with patch("config.APP_ENABLE_VERSIONS", [resource_metadata.APP_FORMAT_VERSION], create=True):
+                manager = RouteManager(str(base))
 
             warnings = manager.route_metadata_warnings()
 
             self.assertEqual(len(warnings), 1)
             self.assertIn("unsupported", warnings[0])
+            self.assertIn("missing", warnings[0])
+            self.assertNotIn("compatible", warnings[0])
 
             missing_annotation = base / "missing_annotation.json"
             missing_annotation.write_text(json.dumps({"types": [], "pointsByType": {}}), encoding="utf-8")
@@ -880,8 +902,7 @@ class RouteGuideTests(unittest.TestCase):
             ):
                 annotation_warnings = manager.annotation_metadata_warnings()
 
-            self.assertEqual(len(annotation_warnings), 1)
-            self.assertIn("unsupported_annotation.json", annotation_warnings[0])
+            self.assertEqual(annotation_warnings, [])
 
     def test_set_point_position_preview_updates_memory_without_writing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

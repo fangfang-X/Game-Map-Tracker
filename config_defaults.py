@@ -53,6 +53,30 @@ DEFAULT_CONFIG = {
     "ANNOTATION_TYPE_IDS": [],
     "ANNOTATION_PRESETS": [],
     "ANNOTATION_GROUP_EXPANDED": {},
+    "ANNOTATION_PRESETS": [
+        {
+            "id": "preset_3e2f22e82cf14888b6830b2da5047a65",
+            "name": "常用传送点",
+            "type_ids": [
+                "17310030024",
+                "17310030025",
+                "17310030038",
+                "17310030039",
+                "17310030040",
+                "17310030041"
+            ]
+        },
+        {
+            "id": "preset_7eab6eb79ce64b529cc749cbbe0fa6c9",
+            "name": "常用采集路线1_只显示矿",
+            "type_ids": [
+                "17310030043",
+                "17310030044",
+                "17310030045",
+                "17310030046"
+            ]
+        }
+    ],
     "APP_UPDATE_LAST_PROMPTED_VERSION": "",
     "APP_NOTICE_LAST_ACK_KEY": "",
 }

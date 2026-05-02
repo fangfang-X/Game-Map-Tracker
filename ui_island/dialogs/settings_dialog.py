@@ -39,7 +39,6 @@ import config
 from . import StyledConfirm, StyledDialogBase, StyledMessage, Toast, center_dialog, place_left_of, toast, toast_persistent
 from .annotation_type_picker import open_annotation_type_multi_picker
 from .color_picker import open_styled_color_picker
-from .route_notes_dialog import open_route_enable_versions_dialog
 from ..app.app_info import APP_VERSION
 from ..design import qss, strings, tokens
 from ..services.annotation_preferences import normalize_type_ids
@@ -673,19 +672,24 @@ class RouteFormatConverterDialog(StyledDialogBase):
 
 class AnnotationFormatConverterDialog(StyledDialogBase):
     _MODE_LEGACY_COORDINATES = "legacy_coordinates"
+    _MODE_ANNOTATION_MERGE = "annotation_merge"
     _MODE_OUTSIDE_FORMAT = "outside_format"
+    _AUTO_CREATED_TARGET_TEXT = "由工具自动创建到 annotations/ 目录"
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent, "标注转换", min_width=680, max_width=860)
         self._mode_combo: QComboBox | None = None
         self._old_file_editor: QLineEdit | None = None
         self._new_file_editor: QLineEdit | None = None
+        self._new_file_button: QPushButton | None = None
         self._new_file_row: QWidget | None = None
         self._source_version_label: QLabel | None = None
+        self._target_version_label: QLabel | None = None
         self._merge_checkbox: QCheckBox | None = None
         self._merge_option_row: QWidget | None = None
         self._start_button: QPushButton | None = None
         self._log: QPlainTextEdit | None = None
+        self._last_target_file_text = config.selected_annotation_path_from_settings() or config.ensure_annotations_dir()
         self._build_ui()
         self.resize(760, 480)
 
@@ -709,6 +713,7 @@ class AnnotationFormatConverterDialog(StyledDialogBase):
         mode_layout.addWidget(mode_label)
         mode_combo = QComboBox(self)
         mode_combo.addItem("旧坐标迁移", self._MODE_LEGACY_COORDINATES)
+        mode_combo.addItem("标注文件合并", self._MODE_ANNOTATION_MERGE)
         mode_combo.addItem("外部格式转换", self._MODE_OUTSIDE_FORMAT)
         mode_combo.currentIndexChanged.connect(self._sync_mode_ui)
         self._mode_combo = mode_combo
@@ -721,12 +726,15 @@ class AnnotationFormatConverterDialog(StyledDialogBase):
             config.ensure_annotations_dir(),
             self._choose_old_file,
             include_version_label=True,
+            version_role="source",
         )
         self._new_file_editor = self._build_file_row(
             layout,
             "新标注文件",
-            config.selected_annotation_path_from_settings() or config.ensure_annotations_dir(),
+            self._last_target_file_text,
             self._choose_new_file,
+            include_version_label=True,
+            version_role="target",
         )
         self._new_file_row = self._new_file_editor.parentWidget()
 
@@ -769,6 +777,7 @@ class AnnotationFormatConverterDialog(StyledDialogBase):
         callback,
         *,
         include_version_label: bool = False,
+        version_role: str = "",
     ) -> QLineEdit:
         row = QWidget(self)
         row_layout = QHBoxLayout(row)
@@ -781,16 +790,24 @@ class AnnotationFormatConverterDialog(StyledDialogBase):
         editor.setMinimumHeight(28)
         row_layout.addWidget(editor, stretch=1)
         if include_version_label:
-            editor.textChanged.connect(self._sync_source_version_label)
+            if version_role == "target":
+                editor.textChanged.connect(self._sync_target_version_label)
+            else:
+                editor.textChanged.connect(self._sync_source_version_label)
             version_label = QLabel("创建格式：未识别")
             version_label.setObjectName("FieldLabel")
             version_label.setMinimumWidth(150)
             row_layout.addWidget(version_label)
-            self._source_version_label = version_label
+            if version_role == "target":
+                self._target_version_label = version_label
+            else:
+                self._source_version_label = version_label
         button = QPushButton("浏览")
         button.setFixedHeight(28)
         button.clicked.connect(callback)
         row_layout.addWidget(button)
+        if version_role == "target":
+            self._new_file_button = button
         layout.addWidget(row)
         return editor
 
@@ -814,6 +831,7 @@ class AnnotationFormatConverterDialog(StyledDialogBase):
         )
         if selected and self._new_file_editor is not None:
             self._new_file_editor.setText(selected)
+            self._sync_target_version_label()
 
     def _current_mode(self) -> str:
         if self._mode_combo is None:
@@ -826,6 +844,14 @@ class AnnotationFormatConverterDialog(StyledDialogBase):
         old_file = self._old_file_editor.text().strip() if self._old_file_editor is not None else ""
         return source_format_version(old_file)
 
+    def _target_format_version(self) -> str:
+        from tools.annotation_converters.base import source_format_version
+
+        new_file = self._new_file_editor.text().strip() if self._new_file_editor is not None else ""
+        if new_file == self._AUTO_CREATED_TARGET_TEXT:
+            return resource_metadata.APP_FORMAT_VERSION
+        return source_format_version(new_file)
+
     def _source_format_is_supported(self) -> bool:
         version = self._source_format_version()
         return bool(version and version in resource_metadata.default_enable_versions())
@@ -837,19 +863,57 @@ class AnnotationFormatConverterDialog(StyledDialogBase):
         self._source_version_label.setText(f"创建格式：{version or '未识别'}")
         self._sync_mode_ui()
 
+    def _sync_target_version_label(self) -> None:
+        if self._target_version_label is None:
+            return
+        legacy_mode = self._current_mode() == self._MODE_LEGACY_COORDINATES
+        legacy_merge = self._merge_checkbox is not None and self._merge_checkbox.isChecked()
+        if legacy_mode and not legacy_merge:
+            version = resource_metadata.APP_FORMAT_VERSION
+        else:
+            version = self._target_format_version()
+        self._target_version_label.setText(f"创建格式：{version or '未识别'}")
+
     def _sync_mode_ui(self) -> None:
         mode = self._current_mode()
         legacy_mode = mode == self._MODE_LEGACY_COORDINATES
+        annotation_merge_mode = mode == self._MODE_ANNOTATION_MERGE
+        legacy_merge = legacy_mode and self._merge_checkbox is not None and self._merge_checkbox.isChecked()
         if self._new_file_row is not None:
-            self._new_file_row.setVisible(legacy_mode)
+            self._new_file_row.setVisible(legacy_mode or annotation_merge_mode)
         if self._merge_option_row is not None:
             self._merge_option_row.setVisible(legacy_mode)
         if self._merge_checkbox is not None:
             self._merge_checkbox.setEnabled(legacy_mode)
         if self._new_file_editor is not None:
-            self._new_file_editor.setEnabled(legacy_mode and self._merge_checkbox is not None and self._merge_checkbox.isChecked())
+            if legacy_mode:
+                current_text = self._new_file_editor.text().strip()
+                if current_text and current_text != self._AUTO_CREATED_TARGET_TEXT:
+                    self._last_target_file_text = self._new_file_editor.text().strip()
+                if legacy_merge:
+                    if not current_text or current_text == self._AUTO_CREATED_TARGET_TEXT:
+                        self._new_file_editor.setText(self._last_target_file_text)
+                    self._new_file_editor.setReadOnly(False)
+                else:
+                    self._new_file_editor.setText(self._AUTO_CREATED_TARGET_TEXT)
+                    self._new_file_editor.setReadOnly(True)
+                self._new_file_editor.setEnabled(True)
+            elif annotation_merge_mode:
+                if self._new_file_editor.text().strip() == self._AUTO_CREATED_TARGET_TEXT:
+                    self._new_file_editor.setText(self._last_target_file_text)
+                self._new_file_editor.setReadOnly(False)
+                self._new_file_editor.setEnabled(True)
+            else:
+                if self._new_file_editor.text().strip() and self._new_file_editor.text().strip() != self._AUTO_CREATED_TARGET_TEXT:
+                    self._last_target_file_text = self._new_file_editor.text().strip()
+                self._new_file_editor.setReadOnly(True)
+                self._new_file_editor.setEnabled(False)
+        if self._new_file_button is not None:
+            self._new_file_button.setVisible(annotation_merge_mode or legacy_merge)
+            self._new_file_button.setEnabled(annotation_merge_mode or legacy_merge)
+        self._sync_target_version_label()
         if self._start_button is not None:
-            self._start_button.setEnabled(legacy_mode or self._source_format_is_supported())
+            self._start_button.setEnabled(legacy_mode or annotation_merge_mode or self._source_format_is_supported())
 
     def _sync_merge_ui(self) -> None:
         self._sync_mode_ui()
@@ -860,6 +924,7 @@ class AnnotationFormatConverterDialog(StyledDialogBase):
 
     def _start_conversion(self) -> None:
         from tools.annotation_converters.registry import (
+            MODE_ANNOTATION_MERGE,
             MODE_LEGACY_COORDINATES,
             MODE_OUTSIDE_FORMAT,
             convert_annotation_file,
@@ -868,23 +933,35 @@ class AnnotationFormatConverterDialog(StyledDialogBase):
         old_file = self._old_file_editor.text().strip() if self._old_file_editor is not None else ""
         new_file = self._new_file_editor.text().strip() if self._new_file_editor is not None else ""
         mode = self._current_mode()
-        merge = mode == self._MODE_LEGACY_COORDINATES and (
-            self._merge_checkbox.isChecked() if self._merge_checkbox is not None else True
-        )
+        legacy_mode = mode == self._MODE_LEGACY_COORDINATES
+        legacy_merge = legacy_mode and self._merge_checkbox is not None and self._merge_checkbox.isChecked()
+        annotation_merge_mode = mode == self._MODE_ANNOTATION_MERGE
+        requires_target_file = legacy_merge or annotation_merge_mode
+        if new_file == self._AUTO_CREATED_TARGET_TEXT:
+            new_file = ""
         if not old_file:
             styled_info(self, "标注转换", "请先选择原标注文件。")
             return
         if mode == self._MODE_OUTSIDE_FORMAT and not self._source_format_is_supported():
             version = self._source_format_version()
             if version:
-                styled_info(self, "标注转换", f"此格式版本暂未兼容转换：{version}")
+                styled_info(self, "标注转换", f"暂不兼容：{version}")
             else:
                 styled_info(self, "标注转换", "原标注文件缺少 format_version，暂未兼容转换。")
             return
-        if mode == self._MODE_LEGACY_COORDINATES and merge and not new_file:
-            styled_info(self, "标注转换", "请先选择要合并的新标注文件。")
+        if requires_target_file and not new_file:
+            styled_info(self, "标注转换", "请先选择目标标注文件。")
             return
-        if merge:
+        if annotation_merge_mode:
+            source_version = self._source_format_version()
+            target_version = self._target_format_version()
+            if not source_version or not target_version:
+                styled_info(self, "标注转换", "标注文件缺少 format_version，无法合并。")
+                return
+            if source_version != target_version:
+                styled_info(self, "标注转换", "格式版本不同，无法合并。")
+                return
+        if requires_target_file:
             confirmed = styled_confirm(
                 self,
                 "标注转换",
@@ -898,12 +975,17 @@ class AnnotationFormatConverterDialog(StyledDialogBase):
             self._log.clear()
 
         try:
+            registry_mode = MODE_LEGACY_COORDINATES
+            if mode == self._MODE_OUTSIDE_FORMAT:
+                registry_mode = MODE_OUTSIDE_FORMAT
+            elif mode == self._MODE_ANNOTATION_MERGE:
+                registry_mode = MODE_ANNOTATION_MERGE
             report = convert_annotation_file(
-                MODE_OUTSIDE_FORMAT if mode == self._MODE_OUTSIDE_FORMAT else MODE_LEGACY_COORDINATES,
+                registry_mode,
                 old_file,
                 config.ensure_annotations_dir(),
-                merge=merge,
-                merge_with=new_file if merge else None,
+                merge=legacy_merge,
+                merge_with=new_file if requires_target_file else None,
             )
         except Exception as exc:
             self._append_log(f"[错误] {exc}")
@@ -978,7 +1060,7 @@ class SettingsDialog(QDialog):
         self._map_dir_combo: QComboBox | None = None
         self._map_file_combo: QComboBox | None = None
         self._annotation_file_combo: QComboBox | None = None
-        self._annotation_enable_versions_button: QPushButton | None = None
+        self._annotation_format_version_label: QLabel | None = None
         self._route_multi_color_checkbox: QCheckBox | None = None
         self._route_special_lines_follow_checkbox: QCheckBox | None = None
         self._route_strict_guide_checkbox: QCheckBox | None = None
@@ -1844,17 +1926,16 @@ class SettingsDialog(QDialog):
         combo.currentIndexChanged.connect(lambda _index: self._sync_annotation_file_state())
         layout.addWidget(combo)
 
+        version_label = QLabel("创建版本：未选择")
+        version_label.setObjectName("FieldLabel")
+        version_label.setMinimumWidth(150)
+        self._annotation_format_version_label = version_label
+        layout.addWidget(version_label)
+
         choose_btn = QPushButton("选择文件")
         choose_btn.setFixedHeight(28)
         choose_btn.clicked.connect(self._on_choose_annotation_file)
         layout.addWidget(choose_btn)
-
-        versions_btn = QPushButton("查看/修改兼容版本")
-        versions_btn.setObjectName("AnnotationEnableVersionsButton")
-        versions_btn.setFixedHeight(28)
-        versions_btn.clicked.connect(self._on_edit_annotation_enable_versions)
-        self._annotation_enable_versions_button = versions_btn
-        layout.addWidget(versions_btn)
 
         layout.addStretch()
         self._sync_annotation_file_state()
@@ -1922,58 +2003,21 @@ class SettingsDialog(QDialog):
         else:
             self._annotation_file_combo.setToolTip("未找到标注文件，可选择 JSON 文件导入 annotations/")
 
-    def _selected_annotation_enable_versions(self) -> list[str]:
-        if self._annotation_file_combo is None:
-            return []
+    def _sync_annotation_format_version_label(self) -> None:
+        if self._annotation_format_version_label is None or self._annotation_file_combo is None:
+            return
         rel = config.normalize_annotation_file(self._annotation_file_combo.currentData())
-        path = config.resolve_app_path(rel) if rel else ""
-        return resource_metadata.enable_versions_with_format_version(resource_metadata.read_json_payload(path))
-
-    def _annotation_visible_enable_versions(self) -> list[str]:
-        return self._selected_annotation_enable_versions()
+        if not rel:
+            self._annotation_format_version_label.setText("创建版本：未选择")
+            return
+        path = config.resolve_app_path(rel)
+        payload = resource_metadata.read_json_payload(path)
+        version = resource_metadata.format_version_as_enable_version(payload)
+        self._annotation_format_version_label.setText(f"创建版本：{version or '未识别'}")
 
     def _sync_annotation_file_state(self) -> None:
         self._sync_annotation_file_tooltip()
-        rel = ""
-        path = ""
-        if self._annotation_file_combo is not None:
-            rel = config.normalize_annotation_file(self._annotation_file_combo.currentData())
-            path = config.resolve_app_path(rel) if rel else ""
-        exists = bool(path and os.path.isfile(path))
-        versions = self._annotation_visible_enable_versions() if exists else []
-        if self._annotation_enable_versions_button is not None:
-            suffix = str(len(versions)) if versions else "无"
-            self._annotation_enable_versions_button.setText(f"查看/修改兼容版本（{suffix}）")
-            self._annotation_enable_versions_button.setEnabled(exists)
-            if exists and versions:
-                tooltip = "兼容版本：\n" + "\n".join(versions) + "\n\n点击查看或修改；不会修改创建时的版本"
-            elif exists:
-                tooltip = "暂无兼容版本\n\n点击查看或修改；不会修改创建时的版本"
-            else:
-                tooltip = "请先选择存在的标注文件"
-            self._annotation_enable_versions_button.setToolTip(tooltip)
-
-    def _on_edit_annotation_enable_versions(self) -> None:
-        if self._annotation_file_combo is None:
-            return
-        rel = config.normalize_annotation_file(self._annotation_file_combo.currentData())
-        path = config.resolve_app_path(rel) if rel else ""
-        if not path or not os.path.isfile(path):
-            styled_info(self, "标注兼容版本", "请先选择存在的标注文件。")
-            self._sync_annotation_file_state()
-            return
-
-        current_versions = self._selected_annotation_enable_versions()
-        options = resource_metadata.route_enable_version_options(current_versions)
-        selected = open_route_enable_versions_dialog(self, options, current_versions)
-        if selected is None:
-            return
-        if not resource_metadata.write_annotation_enable_versions(path, selected):
-            styled_info(self, "标注兼容版本", "写入标注文件兼容版本失败。")
-            self._sync_annotation_file_state()
-            return
-        self._sync_annotation_file_state()
-        toast(self, "标注兼容版本已更新")
+        self._sync_annotation_format_version_label()
 
     def _build_minimap_row(self) -> QWidget:
         row = QWidget()

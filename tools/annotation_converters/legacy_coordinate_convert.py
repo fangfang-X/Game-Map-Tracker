@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from collections import OrderedDict
 from datetime import datetime, timezone
@@ -11,17 +12,22 @@ from ui_island.services import resource_metadata
 
 from .base import AnnotationConversionReport, read_json, write_json_atomic
 
-try:
-    from tools.route_format_converter import old_big_map_xy_to_17173_xy
-except ImportError:  # pragma: no cover - supports running from tools/ directly.
-    from route_format_converter import old_big_map_xy_to_17173_xy
-
 _ANNOTATION_OUTPUT_PREFIX = "annotations_converted"
+_OLD_ANNOTATION_LON_SCALE = 5824.0800
+_OLD_ANNOTATION_LON_OFFSET = 7217.5810
+_OLD_ANNOTATION_LAT_SCALE = 5822.8413
+_OLD_ANNOTATION_LAT_OFFSET = 6602.7721
+
+_TILE_SIZE = 256
+_MAP_ZOOM = 13
+_MAP_TILE_ORIGIN_X = 4064
+_MAP_TILE_ORIGIN_Y = 4064
+_MAP_PIXEL_SIZE = 8192
+
 _ANNOTATION_PAYLOAD_KEY_ORDER = (
     "id",
     "generatedAt",
     "format_version",
-    "enable_versions",
     "mapId",
     "types",
     "pointsByType",
@@ -49,7 +55,7 @@ def _finalize_annotation_payload(payload: dict) -> dict:
     output = dict(payload)
     output["generatedAt"] = datetime.now(timezone.utc).isoformat()
     output.pop("id", None)
-    resource_metadata.ensure_metadata(output, include_id=True)
+    resource_metadata.ensure_metadata(output, include_id=True, enable_versions_policy="preserve")
     return _ordered_annotation_payload(output)
 
 
@@ -68,6 +74,30 @@ def _type_items_by_id(types: object) -> dict[str, dict]:
 
 def _point_type_id(bucket_type_id: str, point: dict) -> str:
     return str(point.get("typeId") or bucket_type_id or "").strip()
+
+
+def _old_big_map_xy_to_latlng(x: float, y: float) -> tuple[float, float]:
+    longitude = (float(x) - _OLD_ANNOTATION_LON_OFFSET) / _OLD_ANNOTATION_LON_SCALE
+    latitude = (_OLD_ANNOTATION_LAT_OFFSET - float(y)) / _OLD_ANNOTATION_LAT_SCALE
+    return latitude, longitude
+
+
+def _latlng_to_17173_xy(latitude: float, longitude: float) -> tuple[int, int]:
+    world_size = (2**_MAP_ZOOM) * _TILE_SIZE
+    global_x = (float(longitude) + 180.0) / 360.0 * world_size
+    lat_rad = math.radians(float(latitude))
+    mercator = math.log(math.tan(lat_rad) + 1.0 / math.cos(lat_rad))
+    global_y = (1.0 - mercator / math.pi) / 2.0 * world_size
+
+    x = int(round(global_x - _MAP_TILE_ORIGIN_X * _TILE_SIZE))
+    y = int(round(global_y - _MAP_TILE_ORIGIN_Y * _TILE_SIZE))
+    max_pixel = _MAP_PIXEL_SIZE - 1
+    return max(0, min(max_pixel, x)), max(0, min(max_pixel, y))
+
+
+def _old_big_map_xy_to_17173_xy(x: float, y: float) -> tuple[int, int]:
+    latitude, longitude = _old_big_map_xy_to_latlng(x, y)
+    return _latlng_to_17173_xy(latitude, longitude)
 
 
 def _sync_type_counts(payload: dict, *, synthesize_missing: bool) -> None:
@@ -113,7 +143,7 @@ def _convert_point(bucket_type_id: str, point: dict) -> tuple[str, dict] | None:
     copied = dict(point)
     type_id = _point_type_id(bucket_type_id, copied)
     try:
-        new_x, new_y = old_big_map_xy_to_17173_xy(copied["x"], copied["y"])
+        new_x, new_y = _old_big_map_xy_to_17173_xy(copied["x"], copied["y"])
     except (KeyError, TypeError, ValueError, OverflowError):
         return None
     copied["x"] = new_x

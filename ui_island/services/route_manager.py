@@ -1026,10 +1026,8 @@ class RouteManager:
     def _validate_route_metadata(self, route: dict, display_name: str) -> None:
         if not isinstance(route, dict):
             return
-        enable_versions = route.get("enable_versions")
-        if isinstance(enable_versions, list) and resource_metadata.APP_FORMAT_VERSION not in [
-            str(item) for item in enable_versions
-        ]:
+        format_version = str(route.get("format_version") or "").strip()
+        if not format_version or format_version not in resource_metadata.default_enable_versions():
             self._record_resource_warning("route_incompatible_version", display_name)
 
 
@@ -1048,18 +1046,11 @@ class RouteManager:
         if not isinstance(payload, dict):
             return [f"标注数据文件格式无效：{rel}"]
 
-        warnings: list[str] = []
-        enable_versions = payload.get("enable_versions")
-        if isinstance(enable_versions, list) and resource_metadata.APP_FORMAT_VERSION not in [
-            str(item) for item in enable_versions
-        ]:
-            warnings.append(f"标注数据文件版本可能不兼容：{rel}")
-
-        return warnings
+        return []
 
     def route_metadata_warnings(self) -> list[str]:
         labels = {
-            "route_incompatible_version": "路线版本可能不兼容",
+            "route_incompatible_version": "路线格式版本不兼容或缺失",
         }
         warnings: list[str] = []
         for key, label in labels.items():

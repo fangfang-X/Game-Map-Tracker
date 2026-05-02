@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_submodules
+
 
 SPEC_DIR = Path(SPECPATH).resolve()
 if SPEC_DIR.is_file():
@@ -10,6 +12,9 @@ ROOT = SPEC_DIR.parent
 
 hiddenimports = [
     "Plan_SIFT.sift_tracker",
+    "tools.annotation_converters.base",
+    "tools.annotation_converters.legacy_coordinate_convert",
+    "tools.annotation_converters.registry",
     "tools.annotation_format_converter",
     "tools.fetch_17173_all_points",
     "tools.fetch_17173_icons",
@@ -18,6 +23,7 @@ hiddenimports = [
     "pynput.keyboard._win32",
     "pynput.mouse._win32",
 ]
+hiddenimports += collect_submodules("tools.annotation_converters.outside_convert")
 
 
 a = Analysis(

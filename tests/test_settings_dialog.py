@@ -11,6 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication, QWidget
 
 import config
+from ui_island.services import resource_metadata
 from ui_island.dialogs.settings_dialog import AnnotationFormatConverterDialog, RouteFormatConverterDialog, SettingsDialog
 
 
@@ -88,6 +89,7 @@ class SettingsDialogMapTests(unittest.TestCase):
                 self.assertIsNotNone(combo)
                 self.assertEqual(combo.currentData(), "")
                 self.assertEqual(combo.currentText(), "请选择标注文件")
+                self.assertEqual(dialog._annotation_format_version_label.text(), "创建版本：未选择")
                 values = dialog._collect()
                 self.assertIsNotNone(values)
                 self.assertEqual(values.get("ANNOTATION_FILE"), "")
@@ -149,103 +151,22 @@ class SettingsDialogMapTests(unittest.TestCase):
                 config.BASE_DIR = old_base_dir
                 config.ANNOTATION_FILE = old_annotation_file
 
-    def test_annotation_enable_versions_show_file_versions_and_switches_files(self) -> None:
+    def test_annotation_file_row_shows_selected_file_format_version(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             old_base_dir = config.BASE_DIR
             old_annotation_file = getattr(config, "ANNOTATION_FILE", "")
             try:
                 config.BASE_DIR = tmp
                 config.ANNOTATION_FILE = "annotations/current.json"
-                annotations_dir = Path(tmp, "annotations")
-                annotations_dir.mkdir(parents=True)
-                (annotations_dir / "current.json").write_text(
-                    json.dumps({"enable_versions": ["1.0.0", "hidden", "2.0.0"]}),
-                    encoding="utf-8",
-                )
-                (annotations_dir / "other.json").write_text(
-                    json.dumps({"enable_versions": ["2.0.0"]}),
-                    encoding="utf-8",
-                )
-
-                with patch("config.APP_ENABLE_VERSIONS", ["1.0.0", "2.0.0"], create=True):
-                    dialog = SettingsDialog(None)
-                    self._app.processEvents()
-
-                    button = dialog._annotation_enable_versions_button
-                    combo = dialog._annotation_file_combo
-                    self.assertIsNotNone(button)
-                    self.assertIsNotNone(combo)
-                    self.assertEqual(button.text(), "查看/修改兼容版本（3）")
-                    self.assertIn("1.0.0", button.toolTip())
-                    self.assertIn("2.0.0", button.toolTip())
-                    self.assertIn("hidden", button.toolTip())
-                    self.assertTrue(button.isEnabled())
-
-                    combo.setCurrentIndex(combo.findData("annotations/other.json"))
-                    self._app.processEvents()
-
-                    self.assertEqual(button.text(), "查看/修改兼容版本（1）")
-                    self.assertIn("2.0.0", button.toolTip())
-                    self.assertTrue(button.isEnabled())
-                dialog.close()
-            finally:
-                config.BASE_DIR = old_base_dir
-                config.ANNOTATION_FILE = old_annotation_file
-
-    def test_annotation_enable_versions_disabled_without_selected_file(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            old_base_dir = config.BASE_DIR
-            old_annotation_file = getattr(config, "ANNOTATION_FILE", "")
-            try:
-                config.BASE_DIR = tmp
-                config.ANNOTATION_FILE = ""
-                Path(tmp, "annotations").mkdir(parents=True)
+                path = Path(tmp, "annotations", "current.json")
+                path.parent.mkdir(parents=True)
+                path.write_text(json.dumps({"format_version": "tool-1"}), encoding="utf-8")
 
                 dialog = SettingsDialog(None)
                 self._app.processEvents()
 
-                self.assertEqual(dialog._annotation_enable_versions_button.text(), "查看/修改兼容版本（无）")
-                self.assertFalse(dialog._annotation_enable_versions_button.isEnabled())
-                dialog.close()
-            finally:
-                config.BASE_DIR = old_base_dir
-                config.ANNOTATION_FILE = old_annotation_file
-
-    def test_edit_annotation_enable_versions_writes_empty_array_and_preserves_format_version(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            old_base_dir = config.BASE_DIR
-            old_annotation_file = getattr(config, "ANNOTATION_FILE", "")
-            try:
-                config.BASE_DIR = tmp
-                config.ANNOTATION_FILE = "annotations/current.json"
-                annotations_dir = Path(tmp, "annotations")
-                annotations_dir.mkdir(parents=True)
-                path = annotations_dir / "current.json"
-                path.write_text(
-                    json.dumps(
-                        {
-                            "format_version": "publisher-format",
-                            "enable_versions": ["1.0.0"],
-                            "pointsByType": {"ore": []},
-                        }
-                    ),
-                    encoding="utf-8",
-                )
-
-                with (
-                    patch("config.APP_ENABLE_VERSIONS", ["1.0.0"], create=True),
-                    patch("ui_island.dialogs.settings_dialog.open_route_enable_versions_dialog", return_value=[]),
-                    patch("ui_island.dialogs.settings_dialog.toast"),
-                ):
-                    dialog = SettingsDialog(None)
-                    self._app.processEvents()
-                    dialog._on_edit_annotation_enable_versions()
-
-                payload = json.loads(path.read_text(encoding="utf-8"))
-                self.assertEqual(payload["format_version"], "publisher-format")
-                self.assertEqual(payload["enable_versions"], ["publisher-format"])
-                self.assertEqual(payload["pointsByType"], {"ore": []})
-                self.assertEqual(dialog._annotation_enable_versions_button.text(), "查看/修改兼容版本（1）")
+                self.assertEqual(dialog._annotation_file_combo.currentData(), "annotations/current.json")
+                self.assertEqual(dialog._annotation_format_version_label.text(), "创建版本：tool-1")
                 dialog.close()
             finally:
                 config.BASE_DIR = old_base_dir
@@ -321,6 +242,140 @@ class SettingsDialogMapTests(unittest.TestCase):
 
             self.assertEqual(dialog._source_version_label.text(), "创建格式：tool-1")
             dialog.close()
+
+    def test_annotation_conversion_dialog_has_merge_mode_and_target_format_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp, "source.json")
+            target = Path(tmp, "target.json")
+            source.write_text(json.dumps({"format_version": "tool-1"}), encoding="utf-8")
+            target.write_text(json.dumps({"format_version": "tool-1"}), encoding="utf-8")
+
+            dialog = AnnotationFormatConverterDialog(None)
+            dialog._old_file_editor.setText(str(source))
+            dialog._mode_combo.setCurrentIndex(dialog._mode_combo.findData(dialog._MODE_ANNOTATION_MERGE))
+            dialog._new_file_editor.setText(str(target))
+            self._app.processEvents()
+
+            mode_values = [dialog._mode_combo.itemData(index) for index in range(dialog._mode_combo.count())]
+            mode_labels = [dialog._mode_combo.itemText(index) for index in range(dialog._mode_combo.count())]
+            self.assertEqual(
+                mode_values,
+                [dialog._MODE_LEGACY_COORDINATES, dialog._MODE_ANNOTATION_MERGE, dialog._MODE_OUTSIDE_FORMAT],
+            )
+            self.assertIn("标注文件合并", mode_labels)
+            self.assertEqual(dialog._source_version_label.text(), "创建格式：tool-1")
+            self.assertEqual(dialog._target_version_label.text(), "创建格式：tool-1")
+            self.assertFalse(dialog._new_file_row.isHidden())
+            self.assertFalse(dialog._new_file_editor.isReadOnly())
+            dialog.close()
+
+    def test_annotation_conversion_merge_mode_rejects_different_format_versions_before_convert(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp, "source.json")
+            target = Path(tmp, "target.json")
+            source.write_text(json.dumps({"format_version": "tool-1"}), encoding="utf-8")
+            target.write_text(json.dumps({"format_version": "tool-2"}), encoding="utf-8")
+
+            with (
+                patch("ui_island.dialogs.settings_dialog.styled_info") as styled_info,
+                patch("ui_island.dialogs.settings_dialog.styled_confirm") as styled_confirm,
+                patch("tools.annotation_converters.registry.convert_annotation_file") as convert,
+            ):
+                dialog = AnnotationFormatConverterDialog(None)
+                dialog._old_file_editor.setText(str(source))
+                dialog._mode_combo.setCurrentIndex(dialog._mode_combo.findData(dialog._MODE_ANNOTATION_MERGE))
+                dialog._new_file_editor.setText(str(target))
+                self._app.processEvents()
+
+                dialog._start_conversion()
+
+                styled_info.assert_called_with(dialog, "标注转换", "格式版本不同，无法合并。")
+                styled_confirm.assert_not_called()
+                convert.assert_not_called()
+                dialog.close()
+
+    def test_annotation_conversion_legacy_mode_shows_auto_created_tool_version_and_does_not_merge(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp, "source.json")
+            source.write_text(json.dumps({"pointsByType": {}}), encoding="utf-8")
+            report = SimpleNamespace(
+                output_path=str(Path(tmp, "annotations", "converted.json")),
+                converted_points=0,
+                skipped_points=0,
+                deduplicated_points=0,
+                errors=0,
+                messages=[],
+            )
+
+            with (
+                patch("ui_island.dialogs.settings_dialog.styled_confirm") as styled_confirm,
+                patch("ui_island.dialogs.settings_dialog.toast"),
+                patch("tools.annotation_converters.registry.convert_annotation_file", return_value=report) as convert,
+            ):
+                dialog = AnnotationFormatConverterDialog(None)
+                dialog._old_file_editor.setText(str(source))
+                dialog._merge_checkbox.setChecked(False)
+                self._app.processEvents()
+
+                self.assertTrue(dialog._new_file_editor.isReadOnly())
+                self.assertEqual(dialog._new_file_editor.text(), dialog._AUTO_CREATED_TARGET_TEXT)
+                self.assertEqual(dialog._target_version_label.text(), f"创建格式：{resource_metadata.APP_FORMAT_VERSION}")
+
+                dialog._start_conversion()
+
+                styled_confirm.assert_not_called()
+                self.assertEqual(convert.call_args.args[0], dialog._MODE_LEGACY_COORDINATES)
+                self.assertFalse(convert.call_args.kwargs["merge"])
+                self.assertIsNone(convert.call_args.kwargs["merge_with"])
+                dialog.close()
+
+    def test_annotation_conversion_legacy_mode_defaults_to_selectable_target_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            old_base_dir = config.BASE_DIR
+            old_annotation_file = getattr(config, "ANNOTATION_FILE", "")
+            try:
+                config.BASE_DIR = tmp
+                config.ANNOTATION_FILE = "annotations/current.json"
+                annotations_dir = Path(tmp, "annotations")
+                annotations_dir.mkdir()
+                target = annotations_dir / "current.json"
+                target.write_text(json.dumps({"format_version": resource_metadata.APP_FORMAT_VERSION}), encoding="utf-8")
+                source = Path(tmp, "source.json")
+                source.write_text(json.dumps({"pointsByType": {}}), encoding="utf-8")
+                report = SimpleNamespace(
+                    output_path=str(annotations_dir / "converted.json"),
+                    converted_points=0,
+                    skipped_points=0,
+                    deduplicated_points=0,
+                    errors=0,
+                    messages=[],
+                )
+
+                with (
+                    patch("ui_island.dialogs.settings_dialog.styled_confirm", return_value=True) as styled_confirm,
+                    patch("ui_island.dialogs.settings_dialog.toast"),
+                    patch("tools.annotation_converters.registry.convert_annotation_file", return_value=report) as convert,
+                ):
+                    dialog = AnnotationFormatConverterDialog(None)
+                    dialog._old_file_editor.setText(str(source))
+                    self._app.processEvents()
+
+                    self.assertFalse(dialog._new_file_editor.isReadOnly())
+                    self.assertEqual(Path(dialog._new_file_editor.text()), target)
+                    self.assertFalse(dialog._new_file_button.isHidden())
+                    self.assertFalse(dialog._merge_option_row.isHidden())
+                    self.assertIn(resource_metadata.APP_FORMAT_VERSION, dialog._target_version_label.text())
+
+                    dialog._start_conversion()
+
+                    styled_confirm.assert_called_once()
+                    self.assertEqual(convert.call_args.args[0], dialog._MODE_LEGACY_COORDINATES)
+                    self.assertTrue(convert.call_args.kwargs["merge"])
+                    self.assertEqual(Path(convert.call_args.kwargs["merge_with"]), target)
+                    dialog.close()
+            finally:
+                config.BASE_DIR = old_base_dir
+                config.ANNOTATION_FILE = old_annotation_file
 
     def test_annotation_conversion_outside_mode_disables_start_for_unsupported_version(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

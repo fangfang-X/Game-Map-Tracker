@@ -5,15 +5,18 @@ from __future__ import annotations
 import importlib
 import os
 import pkgutil
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
 from ui_island.services import resource_metadata
 
 from .base import AnnotationConversionReport, UnsupportedAnnotationFormatError, read_json, source_format_version
+from .annotation_merge import convert_annotation_merge_file
 from .legacy_coordinate_convert import convert_annotation_file as convert_legacy_coordinate_file
 
 MODE_LEGACY_COORDINATES = "legacy_coordinates"
+MODE_ANNOTATION_MERGE = "annotation_merge"
 MODE_OUTSIDE_FORMAT = "outside_format"
 
 OutsideConverter = Callable[[dict], dict]
@@ -59,7 +62,7 @@ def convert_outside_annotation_file(
     if not format_version:
         raise UnsupportedAnnotationFormatError("原标注文件缺少 format_version，暂未兼容转换")
     if format_version not in resource_metadata.default_enable_versions():
-        raise UnsupportedAnnotationFormatError(f"此格式版本暂未兼容转换：{format_version}")
+        raise UnsupportedAnnotationFormatError(f"暂不兼容：{format_version}")
 
     discover_outside_converters()
     converter = _OUTSIDE_CONVERTERS.get(format_version)
@@ -69,7 +72,11 @@ def convert_outside_annotation_file(
     converted_payload = converter(payload)
     if not isinstance(converted_payload, dict):
         raise ValueError("外部格式转换结果必须是 JSON 对象")
-    resource_metadata.ensure_metadata(converted_payload, include_id=True)
+    resource_metadata.ensure_metadata(converted_payload, include_id=True, enable_versions_policy="preserve")
+    target_format_version = str(converted_payload.get("format_version") or resource_metadata.APP_FORMAT_VERSION)
+    converted_payload["generatedAt"] = datetime.now(timezone.utc).isoformat()
+    converted_payload["origin_format_version"] = format_version
+    converted_payload["target_format_version"] = target_format_version
 
     output_root = Path(output_dir).expanduser().resolve(strict=False)
     output_root.mkdir(parents=True, exist_ok=True)
@@ -94,6 +101,8 @@ def convert_annotation_file(
 ) -> AnnotationConversionReport:
     if mode == MODE_LEGACY_COORDINATES:
         return convert_legacy_coordinate_file(source_file, output_dir, merge=merge, merge_with=merge_with)
+    if mode == MODE_ANNOTATION_MERGE:
+        return convert_annotation_merge_file(source_file, output_dir, merge_with=merge_with)
     if mode == MODE_OUTSIDE_FORMAT:
         return convert_outside_annotation_file(source_file, output_dir)
     raise ValueError(f"未知标注转换模式：{mode}")

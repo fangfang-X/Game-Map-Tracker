@@ -156,7 +156,7 @@ HEADER_UNLOCK = "解锁"
 HEADER_UNLOCK_HINT = "快捷键 Alt+` 解锁"
 
 MAP_HINT = "滚轮缩放，左键拖动，双击选点"
-MAP_MISSING_BASE_MAP_NOTICE = "请在设置中设置底图"
+MAP_MISSING_BASE_MAP_NOTICE = "未在设置中设置底图"
 
 INSERT_POINT_DIALOG_TITLE = "添加节点到路线"
 INSERT_POINT_COORD_FMT = "坐标：X = {x}，Y = {y}"

@@ -130,14 +130,6 @@ def ensure_metadata(
     return payload
 
 
-def read_annotation_enable_versions(path: str | os.PathLike[str] | None) -> list[str]:
-    """Read enable_versions from an annotation JSON. Returns [] if missing/invalid."""
-    payload = read_json_payload(path)
-    if payload is None:
-        return []
-    return _dedupe_versions(payload.get("enable_versions"))
-
-
 def read_json_payload(path: str | os.PathLike[str] | None) -> dict | None:
     if not path or not os.path.isfile(path):
         return None
@@ -147,38 +139,6 @@ def read_json_payload(path: str | os.PathLike[str] | None) -> dict | None:
     except (OSError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
-
-
-def write_annotation_enable_versions(
-    path: str | os.PathLike[str] | None, versions
-) -> bool:
-    """Update only enable_versions in the annotation JSON; preserve all other fields
-    including format_version. Returns True on success."""
-    if not path or not os.path.isfile(path):
-        return False
-    try:
-        with open(path, "r", encoding="utf-8-sig") as handle:
-            payload = json.load(handle)
-    except (OSError, json.JSONDecodeError):
-        return False
-    if not isinstance(payload, dict):
-        return False
-    payload["enable_versions"] = _dedupe_versions(
-        [format_version_as_enable_version(payload), *_dedupe_versions(versions)]
-    )
-    tmp_path = f"{path}.tmp"
-    try:
-        with open(tmp_path, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2, ensure_ascii=False)
-        os.replace(tmp_path, path)
-    except OSError:
-        try:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-        except OSError:
-            pass
-        return False
-    return True
 
 
 def annotation_output_name(root: str | os.PathLike[str], *, prefix: str = "17173points") -> str:

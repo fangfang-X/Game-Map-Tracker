@@ -424,19 +424,22 @@ class WindowModeController:
 
     def apply_mode_ui(self, new_mode, old_mode, tracking_modes) -> None:
         mode_enum = self.window._mode.__class__
+        stable_family = self._stable_family()
+        pause_family = (mode_enum.PAUSED, mode_enum.MAXIMIZED)
         in_alert = new_mode == mode_enum.TRACKING_LOST
         self.window.tracking_controller.set_alert_mode(in_alert)
 
-        if new_mode == mode_enum.PAUSED:
+        if new_mode in pause_family:
             self.window._tracking_attempts_paused = True
             if self.window._locked:
                 self.window._set_locked_state(False)
             self.window._restore_lock_after_relocate = None
+            self.window._lock_state_before_lost = None
             self.window._jump_anomaly_count = 0
             self.window.tracking_controller.set_header_action_visibility(False)
             self.window.state_hint_label.setVisible(False)
         else:
-            if old_mode == mode_enum.PAUSED:
+            if old_mode in pause_family:
                 self.window._tracking_attempts_paused = False
                 self.window._jump_anomaly_count = 0
             header_visible = new_mode != mode_enum.MAXIMIZED and new_mode != mode_enum.TRACKING_LOST
@@ -449,6 +452,11 @@ class WindowModeController:
                     if old_mode == mode_enum.PAUSED:
                         self.window.state_hint_label.setText("正在搜索目标，请稍候…")
                         self.window.state_hint_label.setStyleSheet("")
+
+            if new_mode in stable_family and old_mode in pause_family:
+                desired_locked = bool(self.window._preferred_locked)
+                if self.window._locked != desired_locked:
+                    self.window._set_locked_state(desired_locked)
 
         self.window._update_lock_button_visibility()
         self.window._update_header_button_labels()

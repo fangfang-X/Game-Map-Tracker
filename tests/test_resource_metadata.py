@@ -1,7 +1,4 @@
-import json
-import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 from ui_island.services import resource_metadata
@@ -55,66 +52,6 @@ class ResourceMetadataTests(unittest.TestCase):
         self.assertNotIn("format_version", payload)
         self.assertNotIn("enable_versions", payload)
         self.assertEqual(payload["notes"], "")
-
-    def test_read_annotation_enable_versions_dedupes_values(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp, "points.json")
-            path.write_text(
-                json.dumps({"enable_versions": [" 1.0.0 ", "", "1.0.0", "2.0.0"]}),
-                encoding="utf-8",
-            )
-
-            self.assertEqual(resource_metadata.read_annotation_enable_versions(path), ["1.0.0", "2.0.0"])
-
-    def test_write_annotation_enable_versions_preserves_format_version(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp, "points.json")
-            path.write_text(
-                json.dumps(
-                    {
-                        "format_version": "publisher-format",
-                        "enable_versions": ["old"],
-                        "pointsByType": {"ore": [{"x": 1, "y": 2}]},
-                    },
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
-            )
-
-            self.assertTrue(resource_metadata.write_annotation_enable_versions(path, [" 1.0.0 ", "1.0.0"]))
-
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["format_version"], "publisher-format")
-            self.assertEqual(payload["enable_versions"], ["publisher-format", "1.0.0"])
-            self.assertEqual(payload["pointsByType"], {"ore": [{"x": 1, "y": 2}]})
-
-    def test_write_annotation_enable_versions_keeps_empty_array(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp, "points.json")
-            path.write_text(
-                json.dumps({"format_version": "publisher-format", "enable_versions": ["old"]}),
-                encoding="utf-8",
-            )
-
-            self.assertTrue(resource_metadata.write_annotation_enable_versions(path, []))
-
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["format_version"], "publisher-format")
-            self.assertEqual(payload["enable_versions"], ["publisher-format"])
-
-    def test_write_annotation_enable_versions_keeps_empty_array_without_format_version(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp, "points.json")
-            path.write_text(
-                json.dumps({"enable_versions": ["old"]}),
-                encoding="utf-8",
-            )
-
-            self.assertTrue(resource_metadata.write_annotation_enable_versions(path, []))
-
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            self.assertNotIn("format_version", payload)
-            self.assertEqual(payload["enable_versions"], [])
 
 
 if __name__ == "__main__":
