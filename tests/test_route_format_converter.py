@@ -94,7 +94,7 @@ class RouteFormatConverterTests(unittest.TestCase):
             self.assertNotIn("color", payload)
             self.assertEqual(payload["name"], "路线")
             self.assertTrue(resource_metadata.HASH_RE.fullmatch(payload["id"]))
-            self.assertNotIn("format_version", payload)
+            self.assertEqual(payload["format_version"], resource_metadata.APP_FORMAT_VERSION)
             self.assertNotIn("enable_versions", payload)
             self.assertEqual(payload["points"][0]["x"], expected_x)
             self.assertEqual(payload["points"][0]["y"], expected_y)
@@ -172,6 +172,7 @@ class RouteFormatConverterTests(unittest.TestCase):
                 "map_hash": _MAP_HASH,
                 "map_hashs": [_MAP_HASH],
                 "map_info": {"map_id": "10003", "map_name": "卡洛西亚大陆"},
+                "format_version": "legacy-route-format",
                 "coordinate_space_id": "legacy_big_map_unmapped",
                 "points": [
                     {"x": old_x, "y": old_y, "label": "A"},
@@ -182,7 +183,7 @@ class RouteFormatConverterTests(unittest.TestCase):
 
         self.assertEqual(point_count, 1)
         self.assertTrue(resource_metadata.HASH_RE.fullmatch(payload["id"]))
-        self.assertNotIn("format_version", payload)
+        self.assertEqual(payload["format_version"], "legacy-route-format")
         self.assertNotIn("enable_versions", payload)
         self.assertEqual(payload["points"][0]["x"], expected_x)
         self.assertEqual(payload["points"][0]["y"], expected_y)
@@ -226,7 +227,7 @@ class RouteFormatConverterTests(unittest.TestCase):
             self.assertEqual(payload["points"][0]["x"], expected_x)
             self.assertEqual(payload["points"][0]["y"], expected_y)
             self.assertTrue(resource_metadata.HASH_RE.fullmatch(payload["id"]))
-            self.assertNotIn("format_version", payload)
+            self.assertEqual(payload["format_version"], resource_metadata.APP_FORMAT_VERSION)
             self.assertNotIn("enable_versions", payload)
             self.assertNotIn("coordinate_space_id", payload)
 

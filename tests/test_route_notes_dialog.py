@@ -272,6 +272,7 @@ class RouteNotesDialogTests(unittest.TestCase):
         order_inputs = dialog.findChildren(QLineEdit, "RouteNotesNodeOrderInput")
         order_inputs[0].setText("3/3")
         order_inputs[0].editingFinished.emit()
+        QApplication.processEvents()  # 触发 singleShot(0) 推迟的 reorder
 
         self.assertEqual([node.get("label") for node in dialog.nodes()], ["B", "C", "A"])
         self.assertEqual(
@@ -296,6 +297,7 @@ class RouteNotesDialogTests(unittest.TestCase):
         order_inputs = dialog.findChildren(QLineEdit, "RouteNotesNodeOrderInput")
         order_inputs[2].setText("1/3")
         order_inputs[2].editingFinished.emit()
+        QApplication.processEvents()
 
         self.assertEqual(
             [node.get("label") for node in dialog.nodes()],

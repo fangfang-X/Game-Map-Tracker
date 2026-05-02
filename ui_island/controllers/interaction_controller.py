@@ -12,11 +12,12 @@ class InteractionController:
         self.window = window
 
     def install_resize_filters(self, widget: QWidget) -> None:
+        # 幂等：先 remove 再 install，避免重建子树时过滤器累积
+        # 不递归到 children —— 主窗口只需在 root 上拦截事件，Qt 会自然冒泡；
+        # 给子组件重复安装会让 dangling pointer 在事件分发时段错误。
+        widget.removeEventFilter(self.window)
         widget.installEventFilter(self.window)
         widget.setMouseTracking(True)
-        for child in widget.findChildren(QWidget):
-            child.installEventFilter(self.window)
-            child.setMouseTracking(True)
 
     def nested_sidebar_scroll_area(self, widget: QWidget | None) -> QScrollArea | None:
         current = widget

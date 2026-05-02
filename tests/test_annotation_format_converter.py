@@ -78,7 +78,7 @@ class AnnotationFormatConverterTests(unittest.TestCase):
         self.assertEqual(payload["pointsByType"]["sample"][0]["x"], 5862)
         self.assertEqual(payload["pointsByType"]["sample"][0]["y"], 4114)
 
-    def test_builtin_annotation_data_has_rocopath_type_adjustments(self) -> None:
+    def test_builtin_annotation_data_has_sift2_type_adjustments(self) -> None:
         payload = json.loads(Path("annotations/points_17173.json").read_text(encoding="utf-8-sig"))
         icons = json.loads(Path("tools/points_icon/icons.json").read_text(encoding="utf-8-sig"))
         type_items = {str(item["typeId"]): item for item in payload["types"]}
@@ -400,24 +400,24 @@ class AnnotationFormatConverterTests(unittest.TestCase):
             with self.assertRaisesRegex(UnsupportedAnnotationFormatError, "\u6682\u4e0d\u517c\u5bb9\uff1aunsupported"):
                 convert_outside_annotation_file(source, Path(tmp, "annotations"))
 
-    def test_outside_converter_does_not_normalize_numeric_rocopath_version(self) -> None:
+    def test_outside_converter_does_not_normalize_numeric_sift2_version(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp, "source.json")
             source.write_text(json.dumps({"format_version": 2, "items": []}), encoding="utf-8")
 
             with (
-                patch("config.APP_ENABLE_VERSIONS", ["rocoparh_0.1"], create=True),
+                patch("config.APP_ENABLE_VERSIONS", ["sift2"], create=True),
                 self.assertRaisesRegex(UnsupportedAnnotationFormatError, "\u6682\u4e0d\u517c\u5bb9\uff1a2"),
             ):
                 convert_outside_annotation_file(source, Path(tmp, "annotations"))
 
-    def test_rocopath_converter_outputs_gmt_annotation_payload(self) -> None:
+    def test_sift2_converter_outputs_gmt_annotation_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp, "source.json")
             source.write_text(
                 json.dumps(
                     {
-                        "format_version": "rocoparh_0.1",
+                        "format_version": "sift2",
                         "name": "\u793a\u4f8b\u8d44\u6e90\u70b9",
                         "map_path": "display_map.png",
                         "notes": "\u5907\u6ce8",
@@ -450,14 +450,14 @@ class AnnotationFormatConverterTests(unittest.TestCase):
             )
 
             with (
-                patch("config.APP_ENABLE_VERSIONS", ["rocoparh_0.1"], create=True),
+                patch("config.APP_ENABLE_VERSIONS", ["sift2"], create=True),
                 patch("tools.route_format_converter.old_big_map_xy_to_17173_xy", side_effect=AssertionError),
             ):
                 report = convert_outside_annotation_file(source, Path(tmp, "annotations"))
 
             payload = json.loads(Path(report.output_path).read_text(encoding="utf-8"))
             self.assertEqual(payload["format_version"], resource_metadata.APP_FORMAT_VERSION)
-            self.assertEqual(payload["origin_format_version"], "rocoparh_0.1")
+            self.assertEqual(payload["origin_format_version"], "sift2")
             self.assertEqual(payload["target_format_version"], resource_metadata.APP_FORMAT_VERSION)
             datetime.fromisoformat(payload["generatedAt"])
             self.assertNotIn("enable_versions", payload)
@@ -479,7 +479,7 @@ class AnnotationFormatConverterTests(unittest.TestCase):
             self.assertEqual(sea_coral["y"], 5068)
             self.assertEqual(sea_coral["label"], "\u6d77\u73ca\u745a")
 
-    def test_rocopath_converter_rejects_unmapped_resource_type(self) -> None:
+    def test_sift2_converter_rejects_unmapped_resource_type(self) -> None:
         with self.assertRaisesRegex(UnsupportedAnnotationFormatError, "9999"):
             convert_rocopath_resource_points_payload(
                 {

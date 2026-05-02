@@ -21,7 +21,6 @@ PROTECTED_USER_FILES = {
 }
 PROTECTED_USER_PREFIXES = (
     "annotations/",
-    "maps/",
     "routes/",
     "tools/",
 )
@@ -34,10 +33,7 @@ DEFAULT_EXCLUDES = {
     "config.json.bak",
 }
 DEFAULT_DELETE_PATHS: tuple[str, ...] = ()
-DEFAULT_INCLUDE_PATHS: tuple[str, ...] = (
-    "maps/卡洛西亚大陆/big_map_17173.png",
-    "maps/卡洛西亚大陆/big_map_17173带传送图标.png",
-)
+DEFAULT_INCLUDE_PATHS: tuple[str, ...] = ()
 RUNTIME_CONFIG_STRING_KEYS = (
     "QUARK_DOWNLOAD_URL",
     "ROUTE_RESOURCE_URL",

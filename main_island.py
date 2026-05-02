@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import os
 import sys
 import traceback
@@ -17,6 +18,15 @@ import numpy as np
 from PySide6.QtWidgets import QApplication
 
 import config
+
+# 把 C 层崩溃（段错误等）的栈写到日志，否则 Qt native crash 会静默退出
+try:
+    _logs_dir = config.app_path("logs")
+    os.makedirs(_logs_dir, exist_ok=True)
+    _fault_log = open(os.path.join(_logs_dir, "fault.log"), "a", buffering=1, encoding="utf-8")
+    faulthandler.enable(_fault_log)
+except Exception:
+    faulthandler.enable()
 from ui_island.services.image_io import imread_unicode
 from ui_island.state.tracking import BaseTracker, TrackResult, TrackState
 from ui_island.services.route_manager import RouteManager

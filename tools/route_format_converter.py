@@ -298,6 +298,8 @@ def convert_old_big_map_route_payload(payload: dict) -> tuple[dict, int]:
         raise ValueError("路线 JSON 顶层必须是对象")
 
     output = _clean_route_metadata(payload)
+    if not str(output.get("format_version") or "").strip():
+        output["format_version"] = resource_metadata.APP_FORMAT_VERSION
     converted_points = 0
     for key in ("points", "nodes"):
         points = output.get(key)

@@ -304,6 +304,15 @@ if (Test-Path $PublishedConverter) {
     Remove-Item -Force $PublishedConverter
 }
 
+$PublishedMapsRoot = Join-Path $UpdateDir "maps"
+$PublishedMapImages = @()
+if (Test-Path $PublishedMapsRoot) {
+    $PublishedMapImages = @(Get-ChildItem -Recurse -File -Path $PublishedMapsRoot -Include *.png, *.jpg, *.jpeg, *.webp -ErrorAction SilentlyContinue)
+}
+if ($PublishedMapImages.Count -eq 0) {
+    throw "$ReleasePathspec\maps 不含任何地图图片，发布会让客户端拿到空 maps 目录。请检查 dist\GMT-N\maps（很可能未重新打包，或 build_windows.ps1 拷贝步骤失败）。"
+}
+
 Write-Host "生成更新清单..."
 $manifestArgs = @(
     "scripts/generate_update_manifest.py",

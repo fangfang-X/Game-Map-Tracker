@@ -1,4 +1,4 @@
-param(
+﻿param(
     [ValidateSet("update", "test")]
     [string]$Channel = "update",
     [switch]$SkipInstall,

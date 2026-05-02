@@ -516,8 +516,13 @@ class RouteNodeEditorPanel(QWidget):
         order_input.setProperty("routeNotesDragIndex", index)
         order_input.setContextMenuPolicy(Qt.NoContextMenu)
         order_input.installEventFilter(self)
+        # 关键：editingFinished 触发时 Qt C++ 调用栈还持有 order_input 指针；
+        # 同步调用 _apply_order_text -> _refresh_node_rows 会 deleteLater 当前 input，
+        # 退栈时访问已销毁对象 -> 0xc0000374 堆破坏。用 singleShot(0) 推迟到下一 tick。
         order_input.editingFinished.connect(
-            lambda editor=order_input, known_index=index: self._apply_order_text(known_index, editor.text())
+            lambda editor=order_input, known_index=index: QTimer.singleShot(
+                0, lambda e=editor, i=known_index: self._apply_order_text(i, e.text())
+            )
         )
         row_layout.addWidget(order_input)
         return row
@@ -755,19 +760,29 @@ class RouteNodeEditorPanel(QWidget):
         self._move_node(from_index, target)
 
     def _cleanup_node_drag(self) -> None:
+        # 全程兜底：任何 row 已 deleteLater 或 effect 异常，都不能让 mouse grab 残留
         for row in self._node_rows:
             try:
                 row.releaseMouse()
-            except RuntimeError:
+            except Exception:
                 pass
-            row.setGraphicsEffect(None)
+            try:
+                row.setGraphicsEffect(None)
+            except Exception:
+                pass
         self._drag_row_effect = None
         if self._drag_preview is not None:
-            self._drag_preview.hide()
-            self._drag_preview.deleteLater()
+            try:
+                self._drag_preview.hide()
+                self._drag_preview.deleteLater()
+            except Exception:
+                pass
             self._drag_preview = None
         if self._drop_indicator is not None:
-            self._drop_indicator.hide()
+            try:
+                self._drop_indicator.hide()
+            except Exception:
+                pass
         self._drop_target_index = None
 
     def _update_drop_indicator(self, global_pos) -> int | None:
@@ -1198,8 +1213,13 @@ class RouteNotesDialog(StyledDialogBase):
         order_input.setToolTip(strings.CHANGE_POINT_ORDER_MENU_LABEL)
         order_input.setProperty("routeNotesDragIndex", index)
         order_input.installEventFilter(self)
+        # 关键：editingFinished 触发时 Qt C++ 调用栈还持有 order_input 指针；
+        # 同步调用 _apply_order_text -> _refresh_node_rows 会 deleteLater 当前 input，
+        # 退栈时访问已销毁对象 -> 0xc0000374 堆破坏。用 singleShot(0) 推迟到下一 tick。
         order_input.editingFinished.connect(
-            lambda editor=order_input, known_index=index: self._apply_order_text(known_index, editor.text())
+            lambda editor=order_input, known_index=index: QTimer.singleShot(
+                0, lambda e=editor, i=known_index: self._apply_order_text(i, e.text())
+            )
         )
         row_layout.addWidget(order_input)
         return row
@@ -1373,19 +1393,29 @@ class RouteNotesDialog(StyledDialogBase):
         self._move_node(from_index, target)
 
     def _cleanup_node_drag(self) -> None:
+        # 全程兜底：任何 row 已 deleteLater 或 effect 异常，都不能让 mouse grab 残留
         for row in self._node_rows:
             try:
                 row.releaseMouse()
-            except RuntimeError:
+            except Exception:
                 pass
-            row.setGraphicsEffect(None)
+            try:
+                row.setGraphicsEffect(None)
+            except Exception:
+                pass
         self._drag_row_effect = None
         if self._drag_preview is not None:
-            self._drag_preview.hide()
-            self._drag_preview.deleteLater()
+            try:
+                self._drag_preview.hide()
+                self._drag_preview.deleteLater()
+            except Exception:
+                pass
             self._drag_preview = None
         if self._drop_indicator is not None:
-            self._drop_indicator.hide()
+            try:
+                self._drop_indicator.hide()
+            except Exception:
+                pass
         self._drop_target_index = None
 
     def _update_drop_indicator(self, global_pos) -> int | None:

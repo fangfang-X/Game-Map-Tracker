@@ -1234,7 +1234,8 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
             self._edge_cursor_active = False
 
         if (
-            event.type() == QEvent.MouseButtonPress
+            watched in (self, self.title_drag_area)
+            and event.type() == QEvent.MouseButtonPress
             and hasattr(event, "globalPosition")
             and event.button() == Qt.LeftButton
             and not self.isMaximized()

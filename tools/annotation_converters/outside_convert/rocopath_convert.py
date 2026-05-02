@@ -1,4 +1,4 @@
-"""Convert RocoPath resource point files into GMT-N annotations."""
+"""Convert sift2 resource point files into GMT-N annotations."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 from tools.annotation_converters.base import UnsupportedAnnotationFormatError
 from tools.annotation_converters.registry import register_outside_converter
 
-FORMAT_VERSION = "rocoparh_0.1"
+FORMAT_VERSION = "sift2"
 
 _ROCOPATH_LON_SCALE = 5824.0800
 _ROCOPATH_LON_OFFSET = 7217.5810
@@ -103,7 +103,7 @@ def _source_id(value: object) -> object:
 
 def _number(value: object, field: str, source_id: object) -> int | float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
-        raise ValueError(f"RocoPath 点位 {source_id or '<无 id>'} 缺少有效 {field}")
+        raise ValueError(f"sift2 点位 {source_id or '<无 id>'} 缺少有效 {field}")
     return value
 
 
@@ -139,10 +139,10 @@ def _clean_label(value: object, fallback: str) -> str:
 
 def convert_rocopath_resource_points_payload(payload: dict) -> dict:
     if not isinstance(payload, dict):
-        raise ValueError("RocoPath JSON 顶层必须是对象")
+        raise ValueError("sift2 JSON 顶层必须是对象")
     items = payload.get("items")
     if not isinstance(items, list):
-        raise ValueError("RocoPath JSON 缺少 items 列表")
+        raise ValueError("sift2 JSON 缺少 items 列表")
 
     type_items = _load_gmt_type_items()
     missing_mappings: OrderedDict[str, str] = OrderedDict()
@@ -179,7 +179,7 @@ def convert_rocopath_resource_points_payload(payload: dict) -> dict:
 
     if missing_mappings:
         detail = "、".join(f"{type_id} {title}".strip() for type_id, title in missing_mappings.items())
-        raise UnsupportedAnnotationFormatError(f"RocoPath 缺少资源类型映射：{detail}")
+        raise UnsupportedAnnotationFormatError(f"sift2 缺少资源类型映射：{detail}")
     if missing_target_types:
         detail = "、".join(f"{target_id}(来自 {source_id})" for target_id, source_id in missing_target_types.items())
         raise UnsupportedAnnotationFormatError(f"GMT-N 缺少目标标注类型：{detail}")
