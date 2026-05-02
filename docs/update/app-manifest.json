@@ -1,14 +1,14 @@
 {
-  "version": "0.1.3",
-  "notes": "较大改动建议更新；路线绘制支持拖动节点；添加一栏路线详情增加统计途径点位类型和标注统计、顺序详情、指定路线颜色（需要在自己手动为节点添加标注的基础上才会纳入统计,不然只是显示点名称和顺序）路线节点与标注的同时添加进行优化，建议为路线节点同时添加标注；样式优化；最好进b站观看最新详情说明，额外增加了一个转换工具所以可能会额外多提示更新一次",
-  "app_status": "normal",
-  "app_status_message": "",
+  "version": "0.1.5",
+  "notes": "本次更新重要说明：对地图、标注、路线三者进行解耦，请用户自己手动选择地图和标注数据文件，地图文件放到根目录的maps对应地图的文件夹中，标注文件放到根目录的annotations对应地图的文件夹中！！！！！！！！！！！！！！！！！！！！仔细看说明仔细看说明仔细看说明看说明仔细看说明仔细看说明仔细看说明仔细看说明仔细看说明仔细看明！！！！！！！！！！更新不正常就直接从夸克下载更新不正常就直接从夸克下载更新不正常就直接从夸克下载更新不正常就直接从夸克下载更新不正常就直接从夸克下载更新不正常就直接从夸克下载更新不正常就直接从夸克下载!!!!!!!!!!优化路线绘制体验，设置窗口内置旧路线和旧标注数据的坐标转换以及自动为路线添加标注的功能",
+  "app_status": "notice",
+  "app_status_message": "仔细看说明仔细看说明",
   "app_notice_force_prompt": false,
   "min_supported_version": "",
   "min_supported_version_message": "",
   "requires_launcher_update": false,
   "prompt_update": true,
-  "force_update_prompt": false,
+  "force_update_prompt": true,
   "files": [
     {
       "path": "_internal/81d243bd2c585b0f4821__mypyc.cp314-win_amd64.pyd",
@@ -115,7 +115,7 @@
     {
       "path": "_internal/base_library.zip",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/_internal/base_library.zip",
-      "sha256": "3ff390c78d7d81b5752dd493d71e125898846c493870703f61d5746e57e990e2",
+      "sha256": "5fbf26d705c7452f2152f38226fd192dd2a4781c419063177ba686998c501a52",
       "size": 1388164
     },
     {
@@ -1603,49 +1603,60 @@
     {
       "path": "config.json",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/config.json",
-      "sha256": "ef6bbaad88bfa850ba942bc2439dd9581ce07f6c9afbe8c5d8d0eccee5450df8",
-      "size": 1745,
+      "sha256": "30a229c36bd0958e9c94f45219875891705362e1cd1a6ee7fe5c70ac9731013a",
+      "size": 2540,
       "install": "merge_config"
     },
     {
       "path": "GMT-N.exe",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/GMT-N.exe",
-      "sha256": "2f4b8722311d04e42c0acc26f16d4f5fd221425750b966eea240869b1c2f440c",
-      "size": 8587896
+      "sha256": "51169b414225e3ce5df4ba9b6f1d922a130e337519736ac2075c3478e06bb49e",
+      "size": 8802255
+    },
+    {
+      "path": "annotations/points_17173.json",
+      "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/annotations/points_17173.json",
+      "sha256": "5f9ee8e5324497bcc97f4f083f5c9cdeed7dc00a69141da9b34ce5e3b62bbd11",
+      "size": 783201
+    },
+    {
+      "path": "maps/README.md",
+      "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/maps/README.md",
+      "sha256": "e36127f642f842edb654a72185eab4a982c2946915b2e75e212e42eebfd7b7fa",
+      "size": 458
     },
     {
       "path": "maps/卡洛西亚大陆/big_map_17173.png",
-      "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/maps/%E5%8D%A1%E6%B4%9B%E8%A5%BF%E4%BA%9A%E5%A4%A7%E9%99%86/big_map_17173.png",
+      "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/releases/download/v0.1.5/big_map_17173.png",
       "sha256": "6a65fcc08565137c640eb4a62936483bd169afe79bb49fac60983cdbc56d272e",
       "size": 40207113
     },
     {
       "path": "maps/卡洛西亚大陆/big_map_17173带传送图标.png",
-      "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/maps/%E5%8D%A1%E6%B4%9B%E8%A5%BF%E4%BA%9A%E5%A4%A7%E9%99%86/big_map_17173%E5%B8%A6%E4%BC%A0%E9%80%81%E5%9B%BE%E6%A0%87.png",
+      "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/releases/download/v0.1.5/big_map_17173%E5%B8%A6%E4%BC%A0%E9%80%81%E5%9B%BE%E6%A0%87.png",
       "sha256": "3baa83f955e636793b4fb32548bf634829c3dd7b0a639ee7c95b7180b53d9431",
       "size": 38954419
     },
     {
       "path": "README.md",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/README.md",
-      "sha256": "ff6084d0a19efe57302bd15617610a0660552c1abd2720602b2b529a7ec44059",
-      "size": 2992
+      "sha256": "c9cf2bb3b60e7076b42415ca2071f2f4f7905ec980e683d16beaf93213bd027a",
+      "size": 3968
     },
     {
       "path": "updater.exe",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/updater.exe",
-      "sha256": "ee8ebc743d0aeab85e2cbfdb59641f5d5bceff35cc75c395d794cd6793b710c5",
-      "size": 8520802
+      "sha256": "53193913dfdb1069f2ace406626051e7420ca9064ddd8760cde5dae08aa663d6",
+      "size": 8520726
     },
     {
-      "path": "tools/json_txt_converter.exe",
-      "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/releases/download/v0.1.3/json_txt_converter.exe",
-      "sha256": "f775af7134a4def1512c566cfca6b6e2569b6f7f671222cfcca42a2051b2fa47",
-      "size": 11502292
+      "path": "tools/points_icon/17310030083.png",
+      "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/tools/points_icon/17310030083.png",
+      "sha256": "4ddad6f96e5df471e3ca1d7a6709484961603db8627781c8c9be0dda488ba1fd",
+      "size": 5384
     }
   ],
   "delete": [
-    "tools/points_all",
     "big_map.png"
   ],
   "runtime_config": {
@@ -1663,6 +1674,11 @@
         "name": "金山文档路线(需txt和json互转)",
         "url": "https://www.kdocs.cn/wo/sl/v11cdiqU"
       }
+    ],
+    "APP_ENABLE_VERSIONS": [
+      "GMT-N-0.1.5",
+      "GMT-N-0.1.3",
+      "sift2"
     ]
   }
 }

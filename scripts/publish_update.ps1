@@ -341,6 +341,27 @@ if ($UsePromptUpdate) {
 if ($UseForceUpdatePrompt) {
     $manifestArgs += "--force-update-prompt"
 }
+
+$AnnotationsRoot = Join-Path $UpdateDir "annotations"
+if (Test-Path $AnnotationsRoot) {
+    $AnnotationFiles = @(Get-ChildItem -Recurse -File -Path $AnnotationsRoot -Filter *.json -ErrorAction SilentlyContinue)
+    foreach ($file in $AnnotationFiles) {
+        $rel = ($file.FullName.Substring($UpdateDir.Length).TrimStart('\', '/')) -replace '\\', '/'
+        $manifestArgs += @("--include", $rel)
+        Write-Host "  发布 annotations: $rel"
+    }
+}
+
+$PointsIconRoot = Join-Path $UpdateDir "tools/points_icon"
+if (Test-Path $PointsIconRoot) {
+    $PointsIconFiles = @(Get-ChildItem -File -Path $PointsIconRoot -Filter *.png -ErrorAction SilentlyContinue)
+    foreach ($file in $PointsIconFiles) {
+        $rel = ($file.FullName.Substring($UpdateDir.Length).TrimStart('\', '/')) -replace '\\', '/'
+        $manifestArgs += @("--include", $rel)
+        Write-Host "  发布 points_icon: $rel"
+    }
+}
+
 Invoke-Python @manifestArgs
 
 Write-Host "暂存 $ReleasePathspec..."
