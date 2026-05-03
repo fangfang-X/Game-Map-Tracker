@@ -1626,18 +1626,6 @@
       "size": 458
     },
     {
-      "path": "maps/卡洛西亚大陆/big_map_17173.png",
-      "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/maps/%E5%8D%A1%E6%B4%9B%E8%A5%BF%E4%BA%9A%E5%A4%A7%E9%99%86/big_map_17173.png",
-      "sha256": "6a65fcc08565137c640eb4a62936483bd169afe79bb49fac60983cdbc56d272e",
-      "size": 40207113
-    },
-    {
-      "path": "maps/卡洛西亚大陆/big_map_17173带传送图标.png",
-      "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/maps/%E5%8D%A1%E6%B4%9B%E8%A5%BF%E4%BA%9A%E5%A4%A7%E9%99%86/big_map_17173%E5%B8%A6%E4%BC%A0%E9%80%81%E5%9B%BE%E6%A0%87.png",
-      "sha256": "3baa83f955e636793b4fb32548bf634829c3dd7b0a639ee7c95b7180b53d9431",
-      "size": 38954419
-    },
-    {
       "path": "README.md",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/README.md",
       "sha256": "c9cf2bb3b60e7076b42415ca2071f2f4f7905ec980e683d16beaf93213bd027a",
