@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import subprocess
 import threading
 import traceback
 import uuid
@@ -1098,6 +1099,56 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
             on_annotation_refresh_requested=self._on_annotation_refresh_requested,
         )
 
+    @staticmethod
+    def _restart_command() -> list[str]:
+        if getattr(sys, "frozen", False):
+            return [sys.executable, *sys.argv[1:]]
+        return [sys.executable, *sys.argv]
+
+    def _shutdown_background_services(self) -> None:
+        self._running = False
+        self.hotkey_controller.stop_listener()
+        tracker_thread = getattr(self, "_thread", None)
+        if tracker_thread is not None and tracker_thread is not threading.current_thread():
+            try:
+                tracker_thread.join(timeout=1.0)
+            except RuntimeError:
+                pass
+
+    def _close_other_top_level_widgets(self) -> None:
+        app = QApplication.instance()
+        if app is None:
+            return
+        for widget in app.topLevelWidgets():
+            if widget is not self:
+                widget.close()
+
+    def restart_app_from_settings(self) -> None:
+        command = self._restart_command()
+        self._shutdown_background_services()
+        try:
+            subprocess.Popen(
+                command,
+                cwd=str(config.BASE_DIR),
+                close_fds=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform.startswith("win") else 0,
+            )
+        except Exception as exc:
+            styled_info(self, "重启失败", f"设置已保存，但自动重启失败。请手动重新打开程序。\n\n{exc}")
+            return
+
+        try:
+            self.route_panel_controller.save_route_section_expanded()
+            self.route_mgr.save_visibility()
+            self.route_mgr.save_progress()
+            self.window_mode_controller.save_window_geometry()
+        except Exception:
+            pass
+        self._close_other_top_level_widgets()
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
+
     def _on_settings_applied(self) -> None:
         self._minimap_region = self.settings_gateway.get_minimap()
         self.route_panel_controller.refresh_route_checkbox_colors()
@@ -1156,17 +1207,14 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
         self._quit_entire_app()
 
     def _quit_entire_app(self) -> None:
-        self._running = False
-        self.hotkey_controller.stop_listener()
+        self._shutdown_background_services()
         try:
             self.route_mgr.save_progress()
         except Exception:
             pass
         app = QApplication.instance()
         if app is not None:
-            for widget in app.topLevelWidgets():
-                if widget is not self:
-                    widget.close()
+            self._close_other_top_level_widgets()
             app.quit()
         self.close()
 
@@ -1538,17 +1586,14 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
         if not self.route_panel_controller.confirm_exit_route_drawing():
             event.ignore()
             return
-        self._running = False
-        self.hotkey_controller.stop_listener()
+        self._shutdown_background_services()
         self.route_panel_controller.save_route_section_expanded()
         self.route_mgr.save_visibility()
         self.route_mgr.save_progress()
         self.window_mode_controller.save_window_geometry()
         app = QApplication.instance()
         if app is not None:
-            for widget in app.topLevelWidgets():
-                if widget is not self:
-                    widget.close()
+            self._close_other_top_level_widgets()
             app.quit()
         super().closeEvent(event)
 
@@ -1665,6 +1710,8 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
         return display, False, False
 
     def _on_frame(self, result: TrackResult) -> None:
+        if not getattr(self, "_running", True):
+            return
         state = TrackState.SEARCHING if self.isMaximized() else result.state
         if (
             not self.isMaximized()

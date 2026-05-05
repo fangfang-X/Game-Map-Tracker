@@ -13,7 +13,13 @@ from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QWidget
 
 import config
 from ui_island.services import resource_metadata
-from ui_island.dialogs.settings_dialog import AnnotationFormatConverterDialog, RouteFormatConverterDialog, SettingsDialog
+from ui_island.dialogs import settings_dialog as settings_dialog_module
+from ui_island.dialogs.settings_dialog import (
+    AnnotationFormatConverterDialog,
+    RouteFormatConverterDialog,
+    SettingsDialog,
+    open_settings_dialog,
+)
 from ui_island.services.settings_schema import TOOL_BUTTONS
 
 
@@ -21,6 +27,10 @@ class SettingsDialogMapTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls._app = QApplication.instance() or QApplication([])
+
+    def tearDown(self) -> None:
+        settings_dialog_module.close_active_settings_dialog()
+        self._app.processEvents()
 
     def test_settings_tool_buttons_remove_documentation_entry(self) -> None:
         self.assertNotIn("更新文档", TOOL_BUTTONS)
@@ -32,6 +42,28 @@ class SettingsDialogMapTests(unittest.TestCase):
         for _, names in dialog._TOOL_BUTTON_GROUPS:
             self.assertNotIn("更新文档", names)
         dialog.close()
+
+    def test_open_settings_dialog_routes_restart_to_parent_without_execl(self) -> None:
+        class Parent(QWidget):
+            def __init__(self) -> None:
+                super().__init__()
+                self.restart_count = 0
+
+            def restart_app_from_settings(self) -> None:
+                self.restart_count += 1
+
+        parent = Parent()
+        with patch("os.execl") as execl:
+            open_settings_dialog(parent)
+            self._app.processEvents()
+            dialog = settings_dialog_module._active_dialog
+            self.assertIsNotNone(dialog)
+
+            dialog.restart_requested.emit()
+
+        self.assertEqual(parent.restart_count, 1)
+        execl.assert_not_called()
+        parent.close()
 
     def test_interaction_tab_collects_annotation_panel_follow_window(self) -> None:
         with patch.object(config, "ANNOTATION_PANEL_FOLLOW_WINDOW", True, create=True):

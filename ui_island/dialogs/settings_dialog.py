@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import sys
 import threading
 import traceback
 from datetime import datetime
@@ -3145,17 +3144,6 @@ class SettingsDialog(QDialog):
         super().mouseReleaseEvent(event)
 
 
-def _restart_app() -> None:
-    try:
-        app = QApplication.instance()
-        if app is not None:
-            app.quit()
-    except Exception:
-        pass
-    python = sys.executable
-    os.execl(python, python, *sys.argv)
-
-
 _active_dialog: SettingsDialog | None = None
 
 
@@ -3183,7 +3171,8 @@ def open_settings_dialog(
         dialog.applied.connect(on_applied)
     if on_annotation_refresh_requested is not None:
         dialog.annotation_refresh_requested.connect(on_annotation_refresh_requested)
-    dialog.restart_requested.connect(_restart_app)
+    if parent is not None and hasattr(parent, "restart_app_from_settings"):
+        dialog.restart_requested.connect(parent.restart_app_from_settings)
 
     def _clear_ref():
         global _active_dialog
