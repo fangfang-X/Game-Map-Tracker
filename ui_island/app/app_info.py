@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 APP_NAME = "GMT-N"
-APP_VERSION = "0.1.5"
+APP_VERSION = "0.1.6"
 APP_FORMAT_VERSION = f"{APP_NAME}-{APP_VERSION}"
 APP_ENABLE_VERSIONS = [APP_FORMAT_VERSION]
 
