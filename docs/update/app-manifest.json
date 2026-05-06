@@ -5,7 +5,7 @@
   "app_status_message": "本工具不涉及游戏内存读写与控制鼠标键盘的输入输出，仅通过观看玩家肉眼能看到的小地图内容进行优化体验；本工具免费分享仅供学习交流，禁止二次倒卖，禁止将本工具用于非法用途，使用本工具进行的行为与作者无关",
   "app_notice_force_prompt": true,
   "min_supported_version": "0.1.6",
-  "min_supported_version_message": "本工具免费分享禁止二次倒卖，若你付费购买说明是被骗了；本工具免费分享禁止二次倒卖，若你付费购买说明是被骗了；后续会考虑启用机器码校验方案避免倒卖，请更新；更新错误请先通过夸克网盘更新完整版",
+  "min_supported_version_message": "本工具免费分享禁止二次倒卖，若你付费购买说明是被骗了；本工具免费分享禁止倒卖，若你付费购买说明是被骗了；启用机器码校验方案避免倒卖，请更新；更新错误请先通过夸克网盘更新完整版",
   "requires_launcher_update": false,
   "prompt_update": true,
   "force_update_prompt": false,
@@ -115,7 +115,7 @@
     {
       "path": "_internal/base_library.zip",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/_internal/base_library.zip",
-      "sha256": "b76f5008204773a1211bfe605f300e0881fcd81a6e6e4ee5318471b0661ae483",
+      "sha256": "105187ff308876c6290d087fb410cef4582fb4dc1d14846b0b62e761fc4585d1",
       "size": 1388164
     },
     {
@@ -1616,8 +1616,8 @@
     {
       "path": "GMT-N.exe",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/GMT-N.exe",
-      "sha256": "ba92f0ee272697db9a702ccb0a6a4f835fe7653b055558d0b30e839c036938ad",
-      "size": 8897019
+      "sha256": "12a97cbe1b444a35a81f780ed78900b420ca3bc2069bd74e9f1a42a21ac8e631",
+      "size": 8897076
     },
     {
       "path": "maps/卡洛西亚大陆/big_map_new.png",
@@ -2138,8 +2138,8 @@
     {
       "path": "updater.exe",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/updater.exe",
-      "sha256": "921e0846bb80f47c009f526a12cdf902644a78be38776b85bc436aa561cb0027",
-      "size": 8520680
+      "sha256": "de6df8c8cbe8cf492935cc7565b9a9d5ec9add7406d26455c59cac36c542f3ce",
+      "size": 8520508
     }
   ],
   "delete": [
