@@ -208,6 +208,7 @@ class _FakeRouteManager:
         self.saved_points_calls: list[tuple[str, list[dict], bool | None]] = []
         self.saved_notes_calls: list[tuple[str, str, str, str | None]] = []
         self.saved_enable_versions_calls: list[tuple[str, list[str]]] = []
+        self.saved_coord_transform_calls: list[tuple[str, dict | None]] = []
         self._new_point_id = 0
 
     @staticmethod
@@ -259,6 +260,11 @@ class _FakeRouteManager:
             return None
         return [str(item).strip() for item in enable_versions if str(item or "").strip()]
 
+    def route_coord_transform(self, route_id: str) -> dict | None:
+        route = self.routes.get(route_id)
+        transform = route.get("coord_transform") if route is not None else None
+        return dict(transform) if isinstance(transform, dict) else None
+
     def update_route_enable_versions(self, route_id: str, versions: list[str]) -> bool:
         route = self.routes.get(route_id)
         if route is None:
@@ -273,6 +279,19 @@ class _FakeRouteManager:
         else:
             route.pop("enable_versions", None)
         self.saved_enable_versions_calls.append((route_id, cleaned))
+        return True
+
+    def update_route_coord_transform(self, route_id: str, coord_transform: dict | None) -> bool:
+        route = self.routes.get(route_id)
+        if route is None:
+            return False
+        if coord_transform is None:
+            route.pop("coord_transform", None)
+            saved = None
+        else:
+            saved = dict(coord_transform)
+            route["coord_transform"] = saved
+        self.saved_coord_transform_calls.append((route_id, saved))
         return True
 
     def add_current_route_enable_version(self, route_id: str) -> bool:
@@ -595,6 +614,68 @@ class RoutePanelFilterTests(unittest.TestCase):
         self.assertEqual(window.route_mgr.saved_enable_versions_calls, [("route-1", ["old-format"])])
         self.assertEqual(window.route_mgr.routes["route-1"]["enable_versions"], ["old-format"])
         self.assertEqual(window.map_view.refresh_count, 1)
+
+    def test_route_notes_dialog_saves_coord_transform_without_other_changes(self) -> None:
+        window = _FakeWindow("")
+        window.route_mgr = _FakeRouteManager({
+            "route-1": {
+                "id": "route-1",
+                "category": "其他",
+                "display_name": "梦兽之森-11个黑矿",
+                "notes": "old",
+                "points": [],
+            }
+        })
+        controller = self._controller_for(window)
+        edited_transform = {"scale_x": 1.2, "scale_y": 1.0, "offset_x": 30.0, "offset_y": 0.0}
+
+        with (
+            patch(
+                "ui_island.controllers.route_panel_controller.edit_route_notes",
+                return_value=(True, "old", None, False, [], False, None, True, edited_transform),
+            ),
+            patch("ui_island.controllers.route_panel_controller.toast"),
+        ):
+            controller.show_route_notes_dialog("其他", "梦兽之森-11个黑矿")
+
+        self.assertEqual(window.route_mgr.saved_notes_calls, [])
+        self.assertEqual(window.route_mgr.saved_points_calls, [])
+        self.assertEqual(window.route_mgr.saved_enable_versions_calls, [])
+        self.assertEqual(window.route_mgr.saved_coord_transform_calls, [("route-1", edited_transform)])
+        self.assertEqual(window.route_mgr.routes["route-1"]["coord_transform"], edited_transform)
+        self.assertEqual(window.map_view.refresh_count, 1)
+
+    def test_route_notes_session_dirty_includes_coord_transform_changes(self) -> None:
+        class _Dialog:
+            def notes_text(self) -> str:
+                return "old"
+
+            def color_override(self):
+                return None
+
+            def draft_nodes(self) -> list[dict]:
+                return []
+
+            def enable_versions(self):
+                return None
+
+            def coord_transform_changed(self) -> bool:
+                return True
+
+        window = _FakeWindow("")
+        controller = self._controller_for(window)
+
+        self.assertTrue(
+            controller._route_notes_session_dirty(
+                {
+                    "dialog": _Dialog(),
+                    "original_notes": "old",
+                    "original_color": None,
+                    "original_draft_nodes": [],
+                    "original_enable_versions": None,
+                }
+            )
+        )
 
 
     def test_category_context_menu_includes_batch_compatibility_action(self) -> None:

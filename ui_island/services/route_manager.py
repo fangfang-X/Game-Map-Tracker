@@ -61,6 +61,7 @@ _SPECIAL_SEGMENT_COLOR = (255, 255, 255)
 _DEFAULT_ROUTE_COLOR_HEX = "#1ad1ff"
 _DEFAULT_SPECIAL_LINE_COLOR_HEX = "#ffffff"
 _DEFAULT_POINTER_ARROW_COLOR_HEX = "#000000"
+_UNSET = object()
 
 
 @dataclass(frozen=True)
@@ -257,16 +258,52 @@ def _adapter_to_current(
     coord_adapter,
     xy: tuple[float, float],
 ) -> tuple[float, float]:
-    _ = coord_adapter
-    return xy
+    if coord_adapter is None or getattr(coord_adapter, "is_identity", True):
+        return xy
+    return coord_adapter.to_current(float(xy[0]), float(xy[1]))
 
 
 def _adapter_to_internal(
     coord_adapter,
     xy: tuple[float, float],
 ) -> tuple[float, float]:
-    _ = coord_adapter
-    return xy
+    if coord_adapter is None or getattr(coord_adapter, "is_identity", True):
+        return xy
+    return coord_adapter.to_internal(float(xy[0]), float(xy[1]))
+
+
+def _adapter_from_payload(payload: object, fallback_adapter=None):
+    explicit = resource_metadata.coord_transform_from_payload(payload)
+    if explicit is None:
+        return fallback_adapter
+    from ui_island.views.map_coordinates import MapCoordinateAdapter
+
+    return MapCoordinateAdapter.from_dict(explicit, map_file=getattr(fallback_adapter, "map_file", None))
+
+
+def _route_coord_adapter(route: dict | None, fallback_adapter=None):
+    return _adapter_from_payload(route, fallback_adapter)
+
+
+def _route_with_current_coords(route: dict, coord_adapter) -> dict:
+    route_adapter = _route_coord_adapter(route, coord_adapter)
+    if route_adapter is None or getattr(route_adapter, "is_identity", True):
+        return route
+    copied = dict(route)
+    current_points: list[object] = []
+    for point in route.get("points") or []:
+        if not isinstance(point, dict):
+            current_points.append(point)
+            continue
+        xy = _point_xy(point)
+        if xy is None:
+            current_points.append(point)
+            continue
+        current = dict(point)
+        current["x"], current["y"] = route_adapter.to_current(xy[0], xy[1])
+        current_points.append(current)
+    copied["points"] = current_points
+    return copied
 
 
 def _map_to_canvas_point(
@@ -293,9 +330,28 @@ def _map_rect_padding_for_screen(
     )
 
 
+def _current_rect_to_internal_bounds(
+    coord_adapter,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+) -> tuple[float, float, float, float]:
+    if coord_adapter is None or getattr(coord_adapter, "is_identity", True):
+        return x1, y1, x2, y2
+    corners = (
+        coord_adapter.to_internal(x1, y1),
+        coord_adapter.to_internal(x1, y2),
+        coord_adapter.to_internal(x2, y1),
+        coord_adapter.to_internal(x2, y2),
+    )
+    xs = [xy[0] for xy in corners]
+    ys = [xy[1] for xy in corners]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
 def _routes_with_current_coords(routes: Iterable[dict], coord_adapter) -> list[dict]:
-    _ = coord_adapter
-    return list(routes)
+    return [_route_with_current_coords(route, coord_adapter) for route in routes]
 
 
 def _node_type(point: dict | None) -> str:
@@ -1012,6 +1068,7 @@ class RouteManager:
         self._annotation_icon_cache: dict[str, np.ndarray | None] = {}
         self._annotation_points_cache: dict[str, list[dict]] | None = None
         self._annotation_spatial_index: dict[tuple[int, int], list[_AnnotationSpatialEntry]] | None = None
+        self._annotation_coord_transform_cache: object = _UNSET
         self._annotation_type_ids: set[str] = set()
         self._resource_warning_counts: dict[str, int] = {}
         self._resource_warning_examples: dict[str, list[str]] = {}
@@ -1156,10 +1213,37 @@ class RouteManager:
     def invalidate_annotation_cache(self, *, icons: bool = False) -> None:
         self._annotation_points_cache = None
         self._annotation_spatial_index = None
+        self._annotation_coord_transform_cache = _UNSET
         if icons:
             self._point_icon_index = None
             self._point_icon_cache.clear()
             self._annotation_icon_cache.clear()
+
+    def _annotation_coord_transform(self) -> dict | None:
+        cached = getattr(self, "_annotation_coord_transform_cache", _UNSET)
+        if cached is not _UNSET:
+            return cached if isinstance(cached, dict) else None
+        loaded = self._load_annotation_payload()
+        payload = loaded[1] if loaded is not None else None
+        transform = resource_metadata.coord_transform_from_payload(payload)
+        self._annotation_coord_transform_cache = dict(transform) if isinstance(transform, dict) else None
+        return transform
+
+    def _annotation_coord_adapter(self, fallback_adapter=None):
+        transform = self._annotation_coord_transform()
+        if transform is None:
+            return fallback_adapter
+        from ui_island.views.map_coordinates import MapCoordinateAdapter
+
+        return MapCoordinateAdapter.from_dict(transform, map_file=getattr(fallback_adapter, "map_file", None))
+
+    def route_coordinate_adapter(self, route_ref: str, fallback_adapter=None):
+        route_id = self.resolve_route_id(route_ref)
+        route = self.route_for_id(route_id) if route_id is not None else None
+        return _route_coord_adapter(route, fallback_adapter)
+
+    def annotation_coordinate_adapter(self, fallback_adapter=None):
+        return self._annotation_coord_adapter(fallback_adapter)
 
     def _annotation_spatial_entries(self) -> dict[tuple[int, int], list[_AnnotationSpatialEntry]]:
         if self._annotation_spatial_index is not None:
@@ -1212,18 +1296,20 @@ class RouteManager:
         if not selected:
             return []
 
+        effective_adapter = self._annotation_coord_adapter(coord_adapter)
+        ix1, iy1, ix2, iy2 = _current_rect_to_internal_bounds(effective_adapter, x1, y1, x2, y2)
         index = self._annotation_spatial_entries()
-        min_cell_x = math.floor(x1 / _ANNOTATION_SPATIAL_CELL_SIZE)
-        max_cell_x = math.floor(x2 / _ANNOTATION_SPATIAL_CELL_SIZE)
-        min_cell_y = math.floor(y1 / _ANNOTATION_SPATIAL_CELL_SIZE)
-        max_cell_y = math.floor(y2 / _ANNOTATION_SPATIAL_CELL_SIZE)
+        min_cell_x = math.floor(ix1 / _ANNOTATION_SPATIAL_CELL_SIZE)
+        max_cell_x = math.floor(ix2 / _ANNOTATION_SPATIAL_CELL_SIZE)
+        min_cell_y = math.floor(iy1 / _ANNOTATION_SPATIAL_CELL_SIZE)
+        max_cell_y = math.floor(iy2 / _ANNOTATION_SPATIAL_CELL_SIZE)
         result: list[_AnnotationSpatialEntry] = []
         for cell_y in range(min_cell_y, max_cell_y + 1):
             for cell_x in range(min_cell_x, max_cell_x + 1):
                 for entry in index.get((cell_x, cell_y), []):
                     if entry.type_id not in selected:
                         continue
-                    current_xy = _adapter_to_current(coord_adapter, entry.xy)
+                    current_xy = _adapter_to_current(effective_adapter, entry.xy)
                     if x1 <= current_xy[0] <= x2 and y1 <= current_xy[1] <= y2:
                         if current_xy == entry.xy:
                             result.append(entry)
@@ -1314,10 +1400,11 @@ class RouteManager:
         if not isinstance(point, dict) or _point_xy(point) is None:
             return None
         copied = dict(point)
-        if coord_adapter is not None:
+        effective_adapter = self._annotation_coord_adapter(coord_adapter)
+        if effective_adapter is not None:
             xy = _point_xy(copied)
             if xy is not None:
-                copied["x"], copied["y"] = coord_adapter.to_current(xy[0], xy[1])
+                copied["x"], copied["y"] = effective_adapter.to_current(xy[0], xy[1])
         copied.setdefault("typeId", type_id)
         return copied
 
@@ -1379,8 +1466,9 @@ class RouteManager:
             return False
 
         name = str(type_name or type_meta.get("type") or type_id).strip() or type_id
+        effective_adapter = self._annotation_coord_adapter(coord_adapter)
         try:
-            resource_x, resource_y = _adapter_to_internal(coord_adapter, (float(x), float(y)))
+            resource_x, resource_y = _adapter_to_internal(effective_adapter, (float(x), float(y)))
             point = {
                 "x": int(round(resource_x)),
                 "y": int(round(resource_y)),
@@ -1621,8 +1709,18 @@ class RouteManager:
         if route is None:
             return None
         points = route.get("points", []) or []
-        _ = coord_adapter
-        return _best_insertion_index(points, (x, y))
+        route_adapter = _route_coord_adapter(route, coord_adapter)
+        current_points: list[dict] = []
+        for point in points:
+            if not isinstance(point, dict):
+                continue
+            copied = dict(point)
+            xy = _point_xy(copied)
+            if xy is None:
+                continue
+            copied["x"], copied["y"] = _adapter_to_current(route_adapter, xy)
+            current_points.append(copied)
+        return _best_insertion_index(current_points, (x, y))
 
     def hit_test_point(
         self,
@@ -1655,6 +1753,7 @@ class RouteManager:
         for rid, route in candidates:
             if not rid:
                 continue
+            route_adapter = _route_coord_adapter(route, coord_adapter)
             points = route.get("points") or []
             for index, point in enumerate(points):
                 try:
@@ -1662,7 +1761,7 @@ class RouteManager:
                     py = float(point["y"])
                 except (KeyError, TypeError, ValueError):
                     continue
-                px, py = _adapter_to_current(coord_adapter, (px, py))
+                px, py = _adapter_to_current(route_adapter, (px, py))
                 dist = math.hypot(px - map_x, py - map_y)
                 if dist > threshold:
                     continue
@@ -1770,9 +1869,10 @@ class RouteManager:
             if points is None:
                 points = []
                 route["points"] = points
-            resource_x, resource_y = _adapter_to_internal(coord_adapter, (float(x), float(y)))
+            route_adapter = _route_coord_adapter(route, coord_adapter)
+            resource_x, resource_y = _adapter_to_internal(route_adapter, (float(x), float(y)))
             insertion_points = points
-            if coord_adapter is not None:
+            if route_adapter is not None:
                 insertion_points = []
                 for point in points:
                     if not isinstance(point, dict):
@@ -1781,7 +1881,7 @@ class RouteManager:
                     xy = _point_xy(copied)
                     if xy is None:
                         continue
-                    copied["x"], copied["y"] = coord_adapter.to_current(xy[0], xy[1])
+                    copied["x"], copied["y"] = route_adapter.to_current(xy[0], xy[1])
                     insertion_points.append(copied)
 
             if route_id in overrides:
@@ -1974,8 +2074,9 @@ class RouteManager:
         if not isinstance(point, dict):
             return False
 
+        route_adapter = _route_coord_adapter(route, coord_adapter)
         try:
-            resource_x, resource_y = _adapter_to_internal(coord_adapter, (float(x), float(y)))
+            resource_x, resource_y = _adapter_to_internal(route_adapter, (float(x), float(y)))
             next_x = int(round(resource_x))
             next_y = int(round(resource_y))
         except (TypeError, ValueError):
@@ -2492,6 +2593,41 @@ class RouteManager:
             return False
         return True
 
+    def update_route_coord_transform(
+        self,
+        route_ref: str,
+        coord_transform: dict | None,
+    ) -> bool:
+        route_id = self.resolve_route_id(route_ref)
+        if route_id is None:
+            return False
+        route = self.route_for_id(route_id)
+        if route is None:
+            return False
+        category = self.category_for_route_id(route_id)
+        name = route.get("display_name") or route.get("name")
+        if not category or not name:
+            return False
+        previous = route.get("coord_transform")
+        had_previous = "coord_transform" in route
+        resource_metadata.apply_coord_transform_to_payload(route, coord_transform)
+        try:
+            self._write_route_file(category, name, route)
+        except Exception as e:
+            if had_previous:
+                route["coord_transform"] = previous
+            else:
+                route.pop("coord_transform", None)
+            print(f"Save route coord_transform failed {self._route_file_path(category, name)}: {e}")
+            return False
+        return True
+
+    def route_coord_transform(self, route_ref: str) -> dict | None:
+        route = self.route_for_id(route_ref)
+        if route is None:
+            return None
+        return resource_metadata.coord_transform_from_payload(route)
+
     def update_route_notes_and_color(
         self,
         category: str,
@@ -2612,6 +2748,7 @@ class RouteManager:
 
         for route in visible_routes:
             route_id = self.route_id(route)
+            route_adapter = _route_coord_adapter(route, coord_adapter)
             points = route.get("points", [])
             color = self.color_for(route_id)
             local_points: list[tuple[int, int] | None] = []
@@ -2622,7 +2759,7 @@ class RouteManager:
                     local_points.append(None)
                     map_points.append(None)
                 else:
-                    current_xy = _adapter_to_current(coord_adapter, xy)
+                    current_xy = _adapter_to_current(route_adapter, xy)
                     map_points.append(current_xy)
                     local_points.append(_map_to_canvas_point(current_xy, vx1, vy1, scale_x, scale_y))
             is_drawing_route = drawing_route is not None and route is drawing_route

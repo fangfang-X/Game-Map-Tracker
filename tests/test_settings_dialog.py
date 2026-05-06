@@ -12,6 +12,7 @@ from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QWidget
 
 import config
+from ui_island.app.window import IslandWindow
 from ui_island.services import resource_metadata
 from ui_island.dialogs import settings_dialog as settings_dialog_module
 from ui_island.dialogs.settings_dialog import (
@@ -95,6 +96,101 @@ class SettingsDialogMapTests(unittest.TestCase):
             self.assertIsNotNone(values)
             self.assertEqual(values["WINDOW_LOCK_FOLLOWS_GUIDE"], False)
             dialog.close()
+
+    def test_global_coord_transform_inputs_are_compact_line_edits(self) -> None:
+        dialog = SettingsDialog(None)
+        self._app.processEvents()
+
+        editors = [
+            dialog._editors[key]
+            for key in ("COORD_SCALE_X", "COORD_SCALE_Y", "COORD_OFFSET_X", "COORD_OFFSET_Y")
+        ]
+
+        self.assertTrue(all(editor.minimumHeight() == 26 for editor in editors))
+        self.assertTrue(all(editor.maximumHeight() == 26 for editor in editors))
+        self.assertTrue(all(editor.minimumWidth() == 60 for editor in editors))
+        self.assertTrue(all(editor.maximumWidth() == 60 for editor in editors))
+        dialog.close()
+
+    def test_annotation_coord_transform_inputs_are_compact_line_edits(self) -> None:
+        dialog = SettingsDialog(None)
+        self._app.processEvents()
+
+        editors = [
+            dialog._annotation_coord_editors[key]
+            for key in ("scale_x", "scale_y", "offset_x", "offset_y")
+        ]
+
+        self.assertTrue(all(editor.minimumHeight() == 26 for editor in editors))
+        self.assertTrue(all(editor.maximumHeight() == 26 for editor in editors))
+        self.assertTrue(all(editor.minimumWidth() == 56 for editor in editors))
+        self.assertTrue(all(editor.maximumWidth() == 56 for editor in editors))
+        dialog.close()
+
+    def test_settings_applied_rebuilds_map_coordinate_adapter(self) -> None:
+        class FakeMapView:
+            def __init__(self) -> None:
+                self.adapter = None
+                self.refresh_count = 0
+
+            def set_coordinate_adapter(self, adapter) -> None:
+                self.adapter = adapter
+
+            def _refresh_from_last_frame(self) -> None:
+                self.refresh_count += 1
+
+        class FakeAnnotationPanel:
+            def __init__(self) -> None:
+                self.loaded_path = None
+
+            def load_index(self, path: str) -> None:
+                self.loaded_path = path
+
+            def set_preferences(self, _ids) -> None:
+                pass
+
+            def set_presets(self, _presets) -> None:
+                pass
+
+            def isVisible(self) -> bool:
+                return False
+
+        fake_map = FakeMapView()
+        fake_route_mgr = SimpleNamespace(invalidated=False)
+        fake_route_mgr.invalidate_annotation_cache = lambda **_kwargs: setattr(fake_route_mgr, "invalidated", True)
+        window = IslandWindow.__new__(IslandWindow)
+        window.settings_gateway = SimpleNamespace(get_minimap=lambda: {"x": 1})
+        window.route_panel_controller = SimpleNamespace(refresh_route_checkbox_colors=lambda: None)
+        window._refresh_hotkey_hint = lambda: None
+        window.hotkey_controller = SimpleNamespace(stop_listener=lambda: None, start_listener=lambda: None)
+        window._apply_configured_window_opacity = lambda: None
+        window.map_view = fake_map
+        window.route_mgr = fake_route_mgr
+        window.annotation_panel = FakeAnnotationPanel()
+        window.annotation_type_ids = ["ore"]
+        window.annotation_presets = []
+        window._sync_annotation_panel_follow_preference = lambda: None
+        window._apply_pure_navigation_ui = lambda: None
+        window.window_mode_controller = SimpleNamespace(refresh_layout_constraints=lambda: None)
+        window._position_annotation_panel = lambda: None
+        window._sync_route_point_drag_enabled = lambda: None
+
+        with (
+            patch.object(config, "COORD_SCALE_X", 1.5, create=True),
+            patch.object(config, "COORD_SCALE_Y", 0.5, create=True),
+            patch.object(config, "COORD_OFFSET_X", 77.0, create=True),
+            patch.object(config, "COORD_OFFSET_Y", -12.0, create=True),
+        ):
+            IslandWindow._on_settings_applied(window)
+
+        self.assertEqual(window._minimap_region, {"x": 1})
+        self.assertTrue(fake_route_mgr.invalidated)
+        self.assertIsNotNone(fake_map.adapter)
+        self.assertEqual(fake_map.adapter.scale_x, 1.5)
+        self.assertEqual(fake_map.adapter.scale_y, 0.5)
+        self.assertEqual(fake_map.adapter.offset_x, 77.0)
+        self.assertEqual(fake_map.adapter.offset_y, -12.0)
+        self.assertEqual(fake_map.refresh_count, 1)
 
     def test_interaction_tab_collects_pure_navigation_mode(self) -> None:
         with (

@@ -1510,6 +1510,8 @@ QCheckBox::indicator:checked:hover {{
         nodes = self._route_notes_nodes(route)
         current_enable_versions = self.window.route_mgr.route_enable_versions(route_id)
         enable_version_options = resource_metadata.route_enable_version_options(current_enable_versions or [])
+        coord_getter = getattr(self.window.route_mgr, "route_coord_transform", None)
+        current_coord_transform = coord_getter(route_id) if callable(coord_getter) else None
         if not isinstance(self.window, QWidget):
             result = edit_route_notes(
                 None,
@@ -1520,14 +1522,17 @@ QCheckBox::indicator:checked:hover {{
                 nodes,
                 current_enable_versions,
                 enable_version_options,
+                coord_transform=current_coord_transform,
             )
             accepted, notes, color = result[:3]
             nodes_changed = bool(result[3]) if len(result) > 3 else False
             edited_nodes = result[4] if len(result) > 4 else nodes
             enable_versions_changed = bool(result[5]) if len(result) > 5 else False
             edited_enable_versions = result[6] if len(result) > 6 else current_enable_versions
+            coord_changed = bool(result[7]) if len(result) > 7 else False
+            edited_coord_transform = result[8] if len(result) > 8 else current_coord_transform
             notes_changed = notes != current_notes or color != current_color
-            if not accepted or (not notes_changed and not nodes_changed and not enable_versions_changed):
+            if not accepted or (not notes_changed and not nodes_changed and not enable_versions_changed and not coord_changed):
                 return
             if notes_changed and not self.window.route_mgr.update_route_notes_and_color(category, name, notes, color):
                 styled_info(self.window, strings.ROUTE_NOTES_TITLE, strings.ROUTE_NOTES_SAVE_FAILED.format(name=name))
@@ -1539,6 +1544,10 @@ QCheckBox::indicator:checked:hover {{
                 route_id,
                 edited_enable_versions or [],
             ):
+                styled_info(self.window, strings.ROUTE_NOTES_TITLE, strings.ROUTE_NOTES_SAVE_FAILED.format(name=name))
+                return
+            coord_writer = getattr(self.window.route_mgr, "update_route_coord_transform", None)
+            if coord_changed and callable(coord_writer) and not coord_writer(route_id, edited_coord_transform):
                 styled_info(self.window, strings.ROUTE_NOTES_TITLE, strings.ROUTE_NOTES_SAVE_FAILED.format(name=name))
                 return
             self._route_notes_refresh_preview()
@@ -1568,6 +1577,7 @@ QCheckBox::indicator:checked:hover {{
             nodes,
             enable_versions=current_enable_versions,
             enable_version_options=enable_version_options,
+            coord_transform=current_coord_transform,
             modal=False,
         )
         center_dialog(dialog, self.window)
@@ -1588,6 +1598,7 @@ QCheckBox::indicator:checked:hover {{
             "original_enable_versions": current_enable_versions,
             "original_had_enable_versions": "enable_versions" in route,
             "original_enable_versions_value": deepcopy(route.get("enable_versions")),
+            "original_coord_transform": current_coord_transform,
         }
         dialog.nodes_changed_signal.connect(lambda rid=route_id: self._on_route_notes_nodes_changed(rid))
         dialog.color_preview_changed.connect(lambda _color, rid=route_id: self._on_route_notes_color_changed(rid))
@@ -1619,6 +1630,10 @@ QCheckBox::indicator:checked:hover {{
             or dialog.color_override() != session.get("original_color")
             or dialog.draft_nodes() != session.get("original_draft_nodes", [])
             or dialog.enable_versions() != session.get("original_enable_versions")
+            or (
+                hasattr(dialog, "coord_transform_changed")
+                and dialog.coord_transform_changed()
+            )
         )
 
     def _route_notes_nodes_changed_for_save(self, session: dict) -> bool:
@@ -1720,10 +1735,16 @@ QCheckBox::indicator:checked:hover {{
         color = dialog.color_override()
         edited_nodes = dialog.nodes()
         edited_enable_versions = dialog.enable_versions()
+        edited_coord_transform = (
+            dialog.coord_transform_value() if hasattr(dialog, "coord_transform_value") else None
+        )
+        coord_changed = bool(
+            hasattr(dialog, "coord_transform_changed") and dialog.coord_transform_changed()
+        )
         notes_changed = notes != session.get("original_notes", "") or color != session.get("original_color")
         nodes_changed = edited_nodes != session.get("original_points", [])
         enable_versions_changed = edited_enable_versions != session.get("original_enable_versions")
-        if not notes_changed and not nodes_changed and not enable_versions_changed:
+        if not notes_changed and not nodes_changed and not enable_versions_changed and not coord_changed:
             self._route_notes_session = None
             dialog.force_close(True)
             return True
@@ -1740,6 +1761,11 @@ QCheckBox::indicator:checked:hover {{
             route_id,
             edited_enable_versions or [],
         ):
+            styled_info(self.window, strings.ROUTE_NOTES_TITLE, strings.ROUTE_NOTES_SAVE_FAILED.format(name=name))
+            self._apply_route_notes_preview(nodes=edited_nodes)
+            return False
+        coord_writer = getattr(self.window.route_mgr, "update_route_coord_transform", None)
+        if coord_changed and callable(coord_writer) and not coord_writer(route_id, edited_coord_transform):
             styled_info(self.window, strings.ROUTE_NOTES_TITLE, strings.ROUTE_NOTES_SAVE_FAILED.format(name=name))
             self._apply_route_notes_preview(nodes=edited_nodes)
             return False
@@ -1775,12 +1801,23 @@ QCheckBox::indicator:checked:hover {{
         self._apply_route_notes_preview(nodes=clean_nodes)
         return True
 
-    def _route_note_resource_xy(self, x: int | float, y: int | float, coord_adapter=None) -> tuple[int, int]:
+    def _route_note_resource_xy(
+        self,
+        x: int | float,
+        y: int | float,
+        *,
+        route_id: str | None = None,
+        coord_adapter=None,
+    ) -> tuple[int, int]:
         try:
             adapter = coord_adapter
             if adapter is None:
                 getter = getattr(getattr(self.window, "map_view", None), "coordinate_adapter", None)
                 adapter = getter() if callable(getter) else None
+            if route_id:
+                adapter_getter = getattr(getattr(self.window, "route_mgr", None), "route_coordinate_adapter", None)
+                if callable(adapter_getter):
+                    adapter = adapter_getter(route_id, adapter) or adapter
             if adapter is None:
                 return int(round(float(x))), int(round(float(y)))
             tx, ty = adapter.to_internal(float(x), float(y))
@@ -1804,7 +1841,12 @@ QCheckBox::indicator:checked:hover {{
         point = nodes[point_index]
         if not isinstance(point, dict):
             return False
-        next_x, next_y = self._route_note_resource_xy(x, y, coord_adapter=coord_adapter)
+        next_x, next_y = self._route_note_resource_xy(
+            x,
+            y,
+            route_id=route_id,
+            coord_adapter=coord_adapter,
+        )
         point["x"] = next_x
         point["y"] = next_y
         return self.update_route_notes_draft_nodes(route_id, nodes, refresh=refresh_panel)

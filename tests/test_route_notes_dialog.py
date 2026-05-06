@@ -361,7 +361,17 @@ class RouteNotesDialogTests(unittest.TestCase):
         ):
             from ui_island.dialogs.route_notes_dialog import edit_route_notes
 
-            accepted, _notes, _color, nodes_changed, nodes, versions_changed, versions = edit_route_notes(
+            (
+                accepted,
+                _notes,
+                _color,
+                nodes_changed,
+                nodes,
+                versions_changed,
+                versions,
+                _coord_changed,
+                _coord_value,
+            ) = edit_route_notes(
                 None,
                 "路线",
                 "",
@@ -399,6 +409,18 @@ class RouteNotesDialogTests(unittest.TestCase):
         self.assertEqual(dialog.color_button.text(), "当前路线颜色")
         self.assertEqual(dialog.color_button.width(), 96)
         self.assertNotIn("#", dialog.color_button.text())
+
+    def test_coord_transform_inputs_are_compact_line_edits(self) -> None:
+        dialog = RouteNotesDialog(None, "Route", "", (0x56, 0x34, 0x12), None, [])
+
+        editors = [
+            dialog.findChild(QLineEdit, f"RouteNotesCoord_{key}")
+            for key in ("scale_x", "scale_y", "offset_x", "offset_y")
+        ]
+
+        self.assertTrue(all(editor is not None for editor in editors))
+        self.assertTrue(all(editor.minimumHeight() == 26 for editor in editors))
+        self.assertTrue(all(editor.maximumHeight() == 26 for editor in editors))
 
     def test_route_enable_versions_dialog_allows_unchecking_current_version(self) -> None:
         dialog = RouteNotesDialog(

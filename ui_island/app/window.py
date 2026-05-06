@@ -48,6 +48,7 @@ from ..services.app_updater import (
 from ..services.annotation_preferences import annotation_preset_names, normalize_annotation_presets, normalize_type_ids
 from ..services.hotkey_config import hotkey_label, qt_event_matches_hotkey
 from ..state import HotkeyState, RouteDrawingState, RoutePanelState, TrackingState, WindowLayoutPrefs, WindowModeState
+from ..views.map_coordinates import MapCoordinateAdapter
 from ..widgets import RestoreIcon
 from ..platform.win_overlay import apply_overlay_flags, set_click_through
 from ..controllers import HotkeyController, InteractionController, MapInteractionController, RoutePanelController, TrackingController, WindowModeController
@@ -1156,6 +1157,10 @@ class IslandWindow(WindowStateBridgeMixin, QWidget):
         self.hotkey_controller.stop_listener()
         self.hotkey_controller.start_listener()
         self._apply_configured_window_opacity()
+        try:
+            self.map_view.set_coordinate_adapter(MapCoordinateAdapter.for_current_config())
+        except Exception:
+            pass
         try:
             self.route_mgr.invalidate_annotation_cache(icons=True)
             self.annotation_panel.load_index(config.selected_annotation_path_from_settings())

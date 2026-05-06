@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QPoint, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QDoubleValidator, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -84,6 +84,18 @@ def _route_notes_config_int(key: str, default: int, minimum: int, maximum: int) 
     if value is None:
         value = getattr(config, "settings", {}).get(key, default)
     return _clamp_int(value, default, minimum, maximum)
+
+
+def _format_coord_value(value: float) -> str:
+    formatted = f"{float(value):.4f}".rstrip("0").rstrip(".")
+    return formatted or "0"
+
+
+def _style_coord_editor(editor: QLineEdit, *, width: int) -> None:
+    editor.setFixedHeight(26)
+    editor.setFixedWidth(width)
+    editor.setStyleSheet("padding: 2px 6px;")
+    editor.setAlignment(Qt.AlignRight)
 
 
 def normalize_color_hex(value: object) -> str | None:
@@ -823,6 +835,7 @@ class RouteNotesDialog(StyledDialogBase):
         *,
         enable_versions: list[str] | None = None,
         enable_version_options: list[str] | None = None,
+        coord_transform: dict | None = None,
         modal: bool = True,
     ) -> None:
         super().__init__(
@@ -845,6 +858,13 @@ class RouteNotesDialog(StyledDialogBase):
         self._original_enable_versions = (
             list(self._enable_versions) if self._enable_versions is not None else None
         )
+        self._coord_transform_initial = (
+            dict(coord_transform) if isinstance(coord_transform, dict) else None
+        )
+        self._coord_transform_current: dict | None = (
+            dict(coord_transform) if isinstance(coord_transform, dict) else None
+        )
+        self._coord_editors: dict[str, "QLineEdit"] = {}
         self._enable_version_options = resource_metadata.route_enable_version_options(
             [*(enable_version_options or []), *(self._enable_versions or [])]
         )
@@ -1077,6 +1097,70 @@ class RouteNotesDialog(StyledDialogBase):
         layout.addWidget(self.editor, stretch=1)
         self._sync_color_controls()
         self._sync_enable_versions_button()
+        self._build_coord_transform_row(layout)
+
+    def _build_coord_transform_row(self, layout: QVBoxLayout) -> None:
+        row = QWidget(self)
+        row.setObjectName("RouteNotesCoordRow")
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(6)
+
+        title = QLabel("坐标变换", row)
+        title.setObjectName("FieldLabel")
+        title.setToolTip(
+            "仅当此路线的外部坐标系与地图像素不同时填写。\n未覆盖时使用全局设置；写盘时按此参数反向回填。"
+        )
+        row_layout.addWidget(title)
+
+        self._coord_editors = {}
+        defaults = {"scale_x": 1.0, "scale_y": 1.0, "offset_x": 0.0, "offset_y": 0.0}
+        labels = {"scale_x": "Sx", "scale_y": "Sy", "offset_x": "Ox", "offset_y": "Oy"}
+        for key in ("scale_x", "scale_y", "offset_x", "offset_y"):
+            cap = QLabel(labels[key], row)
+            row_layout.addWidget(cap)
+            editor = QLineEdit(row)
+            editor.setObjectName(f"RouteNotesCoord_{key}")
+            initial = defaults[key]
+            if isinstance(self._coord_transform_current, dict):
+                value = self._coord_transform_current.get(key, defaults[key])
+                try:
+                    initial = float(value)
+                except (TypeError, ValueError):
+                    initial = defaults[key]
+            editor.setText(_format_coord_value(initial))
+            _style_coord_editor(editor, width=64)
+            validator = QDoubleValidator(-1e9, 1e9, 4, editor)
+            validator.setNotation(QDoubleValidator.StandardNotation)
+            editor.setValidator(validator)
+            editor.textEdited.connect(self._on_coord_editor_changed)
+            self._coord_editors[key] = editor
+            row_layout.addWidget(editor)
+
+        reset_btn = QPushButton("沿用全局", row)
+        reset_btn.setFixedHeight(26)
+        reset_btn.setToolTip("清除该路线的坐标变换覆盖，加载/写盘时回退到全局设置。")
+        reset_btn.clicked.connect(self._reset_coord_transform)
+        row_layout.addWidget(reset_btn)
+        row_layout.addStretch(1)
+        layout.addWidget(row)
+
+    def _reset_coord_transform(self) -> None:
+        self._coord_transform_current = None
+        defaults = {"scale_x": 1.0, "scale_y": 1.0, "offset_x": 0.0, "offset_y": 0.0}
+        for key, editor in self._coord_editors.items():
+            editor.blockSignals(True)
+            editor.setText(_format_coord_value(defaults[key]))
+            editor.blockSignals(False)
+
+    def _on_coord_editor_changed(self, _text: str) -> None:
+        if self._coord_transform_current is None:
+            self._coord_transform_current = {
+                "scale_x": 1.0,
+                "scale_y": 1.0,
+                "offset_x": 0.0,
+                "offset_y": 0.0,
+            }
 
     def _on_node_panel_nodes_changed(self) -> None:
         self._refresh_stats_section()
@@ -1522,6 +1606,29 @@ class RouteNotesDialog(StyledDialogBase):
     def enable_versions_changed(self) -> bool:
         return self._enable_versions != self._original_enable_versions
 
+    def coord_transform_value(self) -> dict | None:
+        if self._coord_transform_current is None:
+            return None
+        defaults = {"scale_x": 1.0, "scale_y": 1.0, "offset_x": 0.0, "offset_y": 0.0}
+        result: dict[str, float] = {}
+        for key, default in defaults.items():
+            editor = self._coord_editors.get(key)
+            if editor is None:
+                result[key] = default
+                continue
+            text = editor.text().strip()
+            if text == "":
+                result[key] = default
+                continue
+            try:
+                result[key] = float(text)
+            except ValueError:
+                result[key] = default
+        return result
+
+    def coord_transform_changed(self) -> bool:
+        return self.coord_transform_value() != self._coord_transform_initial
+
     def nodes(self) -> list[dict]:
         return self.node_panel.nodes()
 
@@ -1606,7 +1713,8 @@ def edit_route_notes(
     nodes: list[dict],
     enable_versions: list[str] | None = None,
     enable_version_options: list[str] | None = None,
-) -> tuple[bool, str, str | None, bool, list[dict], bool, list[str] | None]:
+    coord_transform: dict | None = None,
+) -> tuple[bool, str, str | None, bool, list[dict], bool, list[str] | None, bool, dict | None]:
     dialog = RouteNotesDialog(
         parent,
         route_name,
@@ -1616,6 +1724,7 @@ def edit_route_notes(
         nodes,
         enable_versions=enable_versions,
         enable_version_options=enable_version_options,
+        coord_transform=coord_transform,
     )
     center_dialog(dialog, parent)
     accepted = dialog.exec() == QDialog.Accepted
@@ -1628,6 +1737,8 @@ def edit_route_notes(
             [dict(point) for point in nodes if isinstance(point, dict)],
             False,
             enable_versions,
+            False,
+            coord_transform,
         )
     return (
         True,
@@ -1637,4 +1748,6 @@ def edit_route_notes(
         dialog.nodes(),
         dialog.enable_versions_changed(),
         dialog.enable_versions(),
+        dialog.coord_transform_changed(),
+        dialog.coord_transform_value(),
     )

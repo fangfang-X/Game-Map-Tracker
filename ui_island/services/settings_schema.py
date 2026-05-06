@@ -31,7 +31,14 @@ COMMON_FIELDS: list[Field] = [
     Field("ROUTE_GUIDE_POINTER_SPACING", "导航指针间隔", int, "12~80 px"),
 ]
 
+COORD_FIELDS: list[Field] = [
+    Field("COORD_SCALE_X", "X 缩放", float, "0.0001~10000", "默认 1.0 不变换"),
+    Field("COORD_SCALE_Y", "Y 缩放", float, "0.0001~10000", "默认 1.0 不变换"),
+    Field("COORD_OFFSET_X", "X 偏移", float, "-8192~8192 px", "默认 0 不偏移"),
+    Field("COORD_OFFSET_Y", "Y 偏移", float, "-8192~8192 px", "默认 0 不偏移"),
+]
+
 TOOL_BUTTONS: list[str] = ["检查更新", "夸克网盘", "路线资源", "问题反馈", "标注转换", "路线转换"]
 
-ALL_FIELDS: list[Field] = SIFT_FIELDS + COMMON_FIELDS
+ALL_FIELDS: list[Field] = SIFT_FIELDS + COMMON_FIELDS + COORD_FIELDS
 FIELD_INDEX: dict[str, Field] = {field.key: field for field in ALL_FIELDS}

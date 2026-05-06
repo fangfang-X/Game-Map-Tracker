@@ -1005,6 +1005,9 @@ class MapInteractionController:
             try:
                 resource_x, resource_y = x, y
                 adapter = self._coordinate_adapter()
+                adapter_getter = getattr(route_mgr, "route_coordinate_adapter", None)
+                if callable(adapter_getter):
+                    adapter = adapter_getter(rid, adapter) or adapter
                 if adapter is not None:
                     resource_x, resource_y = adapter.to_internal(float(x), float(y))
             except Exception:

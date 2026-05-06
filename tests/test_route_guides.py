@@ -24,6 +24,7 @@ from ui_island.services.route_manager import (
     NODE_TYPE_TELEPORT,
     NODE_TYPE_VIRTUAL,
 )
+from ui_island.views.map_coordinates import MapCoordinateAdapter
 
 
 def _is_13_digit_route_id(value: object) -> bool:
@@ -132,6 +133,230 @@ class RouteGuideTests(unittest.TestCase):
             saved = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(saved["notes"], "说明 2")
             self.assertNotIn("color", saved)
+
+    def test_update_route_coord_transform_uses_route_id_category_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            category = Path(tmp) / "其他"
+            category.mkdir()
+            route_id = "1234567890123"
+            route_file = category / "梦兽之森-11个黑矿.json"
+            route_file.write_text(
+                json.dumps(
+                    {
+                        "id": route_id,
+                        "name": "梦兽之森-11个黑矿",
+                        "points": [{"x": 1, "y": 2}],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            manager = RouteManager(tmp)
+
+            self.assertTrue(
+                manager.update_route_coord_transform(
+                    route_id,
+                    {"scale_x": 1.2, "scale_y": 1.0, "offset_x": 30.0, "offset_y": 0.0},
+                )
+            )
+
+            saved = json.loads(route_file.read_text(encoding="utf-8"))
+            self.assertEqual(saved["coord_transform"]["scale_x"], 1.2)
+            self.assertEqual(saved["coord_transform"]["offset_x"], 30.0)
+
+    def test_update_route_coord_transform_removes_identity_transform(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            category = Path(tmp) / "routes"
+            category.mkdir()
+            route_id = "1234567890123"
+            route_file = category / "route.json"
+            route_file.write_text(
+                json.dumps(
+                    {
+                        "id": route_id,
+                        "name": "route",
+                        "coord_transform": {"scale_x": 2.0, "scale_y": 1.0, "offset_x": 0.0, "offset_y": 0.0},
+                        "points": [{"x": 1, "y": 2}],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            manager = RouteManager(tmp)
+
+            self.assertTrue(
+                manager.update_route_coord_transform(
+                    route_id,
+                    {"scale_x": 1.0, "scale_y": 1.0, "offset_x": 0.0, "offset_y": 0.0},
+                )
+            )
+
+            saved = json.loads(route_file.read_text(encoding="utf-8"))
+            self.assertNotIn("coord_transform", saved)
+
+    def test_update_route_coord_transform_restores_previous_value_on_write_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            category = Path(tmp) / "routes"
+            category.mkdir()
+            route_id = "1234567890123"
+            route_file = category / "route.json"
+            route_file.write_text(
+                json.dumps(
+                    {
+                        "id": route_id,
+                        "name": "route",
+                        "coord_transform": {"scale_x": 2.0, "scale_y": 1.0, "offset_x": 0.0, "offset_y": 0.0},
+                        "points": [{"x": 1, "y": 2}],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            manager = RouteManager(tmp)
+            route = manager.route_for_id(route_id)
+
+            with patch.object(manager, "_write_route_file", side_effect=OSError("boom")):
+                self.assertFalse(
+                    manager.update_route_coord_transform(
+                        route_id,
+                        {"scale_x": 3.0, "scale_y": 1.0, "offset_x": 0.0, "offset_y": 0.0},
+                    )
+                )
+
+            self.assertEqual(route["coord_transform"]["scale_x"], 2.0)
+
+    def test_hit_test_point_uses_route_coord_transform_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            category = Path(tmp) / "routes"
+            category.mkdir()
+            plain_id = "1234567890123"
+            shifted_id = "1234567890124"
+            (category / "plain.json").write_text(
+                json.dumps(
+                    {
+                        "id": plain_id,
+                        "name": "plain",
+                        "points": [{"x": 10, "y": 10}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (category / "shifted.json").write_text(
+                json.dumps(
+                    {
+                        "id": shifted_id,
+                        "name": "shifted",
+                        "coord_transform": {
+                            "scale_x": 1.0,
+                            "scale_y": 1.0,
+                            "offset_x": 100.0,
+                            "offset_y": 0.0,
+                        },
+                        "points": [{"x": 10, "y": 10}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manager = RouteManager(tmp)
+            manager.visibility[plain_id] = True
+            manager.visibility[shifted_id] = True
+
+            self.assertEqual(manager.hit_test_point(110, 10, 5), (shifted_id, 0))
+            self.assertEqual(manager.hit_test_point(10, 10, 5), (plain_id, 0))
+
+    def test_draw_on_auto_visit_uses_route_coord_transform_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = _manager_with_visible_route(Path(tmp))
+            route = manager.route_for_id("2026010101")
+            route["coord_transform"] = {
+                "scale_x": 1.0,
+                "scale_y": 1.0,
+                "offset_x": 100.0,
+                "offset_y": 0.0,
+            }
+            manager._annotation_type_ids = set()
+            canvas = np.zeros((180, 180, 3), dtype=np.uint8)
+
+            manager.draw_on(canvas, 0, 0, 180, player_x=110, player_y=10)
+
+            self.assertTrue(route["points"][0]["visited"])
+
+    def test_suggest_insertion_index_uses_route_coord_transform_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = _manager_with_visible_route(Path(tmp))
+            route = manager.route_for_id("2026010101")
+            route["points"] = [{"x": 0, "y": 0}, {"x": 100, "y": 0}]
+            route["coord_transform"] = {
+                "scale_x": 1.0,
+                "scale_y": 1.0,
+                "offset_x": 100.0,
+                "offset_y": 0.0,
+            }
+
+            self.assertEqual(manager.suggest_insertion_index("2026010101", 150, 1), 1)
+
+    def test_annotation_hit_test_uses_file_coord_transform_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            annotation_file = Path(tmp) / "points.json"
+            annotation_file.write_text(
+                json.dumps(
+                    {
+                        "types": [{"typeId": "ore", "type": "Ore", "count": 1}],
+                        "pointsByType": {"ore": [{"x": 10, "y": 10}]},
+                        "coord_transform": {
+                            "scale_x": 1.0,
+                            "scale_y": 1.0,
+                            "offset_x": 100.0,
+                            "offset_y": 0.0,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manager = RouteManager(tmp)
+            manager._annotation_type_ids = {"ore"}
+
+            with patch("ui_island.services.route_manager._default_annotation_points_file", return_value=str(annotation_file)):
+                hit = manager.hit_test_annotation_point(110, 10, 5)
+
+            self.assertIsNotNone(hit)
+            assert hit is not None
+            self.assertEqual(hit["typeId"], "ore")
+            self.assertEqual(hit["pointIndex"], 0)
+
+    def test_add_annotation_point_uses_file_coord_transform_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            annotation_file = Path(tmp) / "points.json"
+            annotation_file.write_text(
+                json.dumps(
+                    {
+                        "types": [{"typeId": "ore", "type": "Ore", "count": 0}],
+                        "pointsByType": {"ore": []},
+                        "coord_transform": {
+                            "scale_x": 1.0,
+                            "scale_y": 1.0,
+                            "offset_x": 100.0,
+                            "offset_y": 0.0,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manager = RouteManager(tmp)
+
+            with patch("ui_island.services.route_manager._default_annotation_points_file", return_value=str(annotation_file)):
+                self.assertTrue(manager.add_annotation_point(120, 10, "ore", "Ore"))
+
+            saved = json.loads(annotation_file.read_text(encoding="utf-8"))
+            point = saved["pointsByType"]["ore"][0]
+            self.assertEqual((point["x"], point["y"]), (20, 10))
+
+    def test_global_adapter_remains_fallback_when_no_route_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = _manager_with_visible_route(Path(tmp))
+            adapter = MapCoordinateAdapter.from_params(offset_x=100.0)
+
+            self.assertEqual(manager.hit_test_point(110, 10, 5, coord_adapter=adapter), ("2026010101", 0))
 
     def test_invalid_route_default_color_falls_back_to_blue(self) -> None:
         self.assertEqual(_route_color_from_hex("not-a-color"), (255, 209, 26))

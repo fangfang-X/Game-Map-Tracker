@@ -141,6 +141,62 @@ def read_json_payload(path: str | os.PathLike[str] | None) -> dict | None:
     return payload if isinstance(payload, dict) else None
 
 
+_COORD_TRANSFORM_KEY = "coord_transform"
+_COORD_TRANSFORM_FIELDS = ("scale_x", "scale_y", "offset_x", "offset_y")
+_COORD_TRANSFORM_DEFAULTS = {
+    "scale_x": 1.0,
+    "scale_y": 1.0,
+    "offset_x": 0.0,
+    "offset_y": 0.0,
+}
+
+
+def _coerce_coord_value(value: object, default: float) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def coord_transform_from_payload(payload: object) -> dict | None:
+    """Return the explicit coord_transform dict from a payload, or None if absent."""
+    if not isinstance(payload, dict):
+        return None
+    raw = payload.get(_COORD_TRANSFORM_KEY)
+    if not isinstance(raw, dict):
+        return None
+    return {
+        field: _coerce_coord_value(raw.get(field), _COORD_TRANSFORM_DEFAULTS[field])
+        for field in _COORD_TRANSFORM_FIELDS
+    }
+
+
+def is_identity_coord_transform(transform: object) -> bool:
+    if not isinstance(transform, dict):
+        return True
+    for field, default in _COORD_TRANSFORM_DEFAULTS.items():
+        if _coerce_coord_value(transform.get(field), default) != default:
+            return False
+    return True
+
+
+def apply_coord_transform_to_payload(payload: dict, transform: object) -> None:
+    """Write coord_transform into payload; identity values are stripped."""
+    if not isinstance(payload, dict):
+        return
+    if transform is None or is_identity_coord_transform(transform):
+        payload.pop(_COORD_TRANSFORM_KEY, None)
+        return
+    if not isinstance(transform, dict):
+        return
+    payload[_COORD_TRANSFORM_KEY] = {
+        field: _coerce_coord_value(transform.get(field), _COORD_TRANSFORM_DEFAULTS[field])
+        for field in _COORD_TRANSFORM_FIELDS
+    }
+
+
 def annotation_output_name(root: str | os.PathLike[str], *, prefix: str = "17173points") -> str:
     from datetime import datetime
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import traceback
@@ -57,7 +58,7 @@ from ..services.hotkey_config import (
     payload_from_key_sequence,
 )
 from ..services import resource_metadata
-from ..services.settings_schema import ALL_FIELDS, COMMON_FIELDS, FIELD_INDEX, SIFT_FIELDS, TOOL_BUTTONS, Field
+from ..services.settings_schema import ALL_FIELDS, COMMON_FIELDS, COORD_FIELDS, FIELD_INDEX, SIFT_FIELDS, TOOL_BUTTONS, Field
 from ..widgets.context_menu import ContextMenuItem, show_context_menu
 from ..widgets.factory import make_scroll_area
 
@@ -81,6 +82,21 @@ _ROUTE_COLOR_TOOLTIPS = {
     "ROUTE_POINTER_ARROW_COLOR": "玩家点位到追踪目标节点的指向箭头",
 }
 _SETTINGS_DISCLAIMER = "本工具免费分享，内置地图与标注数据来源于17173，感谢地图维护者"
+
+
+def _format_coord_value(value: float) -> str:
+    formatted = f"{float(value):.4f}".rstrip("0").rstrip(".")
+    return formatted or "0"
+
+
+_COORD_FIELD_KEYS = {field.key for field in COORD_FIELDS}
+
+
+def _style_compact_coord_editor(editor: QLineEdit, *, width: int) -> None:
+    editor.setFixedHeight(26)
+    editor.setFixedWidth(width)
+    editor.setStyleSheet("padding: 2px 6px;")
+    editor.setAlignment(Qt.AlignRight)
 _MAP_FILE_PLACEHOLDER = "请选择底图"
 _ANNOTATION_FILE_PLACEHOLDER = "请选择标注文件"
 _ROUTE_CONVERSION_LOG_LIMIT = 40
@@ -1423,6 +1439,7 @@ class SettingsDialog(QDialog):
         _add_tab("路线与颜色", self._build_common_tab_page(route_rows))
         _add_tab("交互", self._build_common_tab_page(interaction_rows))
         _add_tab("参数", self._build_common_tab_page_fields(param_fields))
+        _add_tab("坐标", self._build_common_tab_page_fields(COORD_FIELDS, narrow_editor=False))
 
         tab_bar_layout.addStretch(1)
         card_layout.addWidget(tab_bar)
@@ -1444,7 +1461,7 @@ class SettingsDialog(QDialog):
         layout.addStretch(1)
         return page
 
-    def _build_common_tab_page_fields(self, fields: list[Field]) -> QWidget:
+    def _build_common_tab_page_fields(self, fields: list[Field], *, narrow_editor: bool = True) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 4, 0, 0)
@@ -1456,7 +1473,7 @@ class SettingsDialog(QDialog):
             col = QVBoxLayout()
             col.setSpacing(10)
             for field in chunk:
-                col.addLayout(self._build_field(field, narrow_editor=True))
+                col.addLayout(self._build_field(field, narrow_editor=narrow_editor))
             col.addStretch()
             outer.addLayout(col, stretch=1)
         layout.addLayout(outer)
@@ -2190,7 +2207,12 @@ class SettingsDialog(QDialog):
             self._map_file_combo.setToolTip("保存后需要重启生效；自定义底图可能导致路线/标注偏移")
 
     def _build_annotation_file_row(self) -> QWidget:
-        row = QWidget()
+        container = QWidget()
+        outer = QVBoxLayout(container)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(4)
+
+        row = QWidget(container)
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 6, 0)
         layout.setSpacing(8)
@@ -2211,7 +2233,7 @@ class SettingsDialog(QDialog):
         self._annotation_file_combo = combo
         self._initial_values["ANNOTATION_FILE"] = current
         self._set_annotation_combo_value(current)
-        combo.currentIndexChanged.connect(lambda _index: self._sync_annotation_file_state())
+        combo.currentIndexChanged.connect(lambda _index: self._on_annotation_file_changed())
         layout.addWidget(combo)
 
         version_label = QLabel("创建版本：未选择")
@@ -2226,8 +2248,92 @@ class SettingsDialog(QDialog):
         layout.addWidget(choose_btn)
 
         layout.addStretch()
+        outer.addWidget(row)
+
+        coord_row = self._build_annotation_coord_row(container)
+        outer.addWidget(coord_row)
+
         self._sync_annotation_file_state()
+        self._reload_annotation_coord_editors()
+        return container
+
+    def _build_annotation_coord_row(self, parent: QWidget) -> QWidget:
+        row = QWidget(parent)
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 6, 0)
+        layout.setSpacing(6)
+
+        title = QLabel("坐标变换", row)
+        title.setObjectName("FieldLabel")
+        title.setToolTip(
+            "对当前选中标注文件单独覆盖。未覆盖时使用全局坐标设置。\n"
+            "保存后写入该文件 metadata；写盘时按此参数反向回填。"
+        )
+        layout.addWidget(title)
+
+        self._annotation_coord_editors: dict[str, QLineEdit] = {}
+        labels = {"scale_x": "Sx", "scale_y": "Sy", "offset_x": "Ox", "offset_y": "Oy"}
+        for key in ("scale_x", "scale_y", "offset_x", "offset_y"):
+            cap = QLabel(labels[key], row)
+            layout.addWidget(cap)
+            editor = QLineEdit(row)
+            editor.setObjectName(f"AnnotationCoord_{key}")
+            _style_compact_coord_editor(editor, width=56)
+            validator = QDoubleValidator(-1e9, 1e9, 4, editor)
+            validator.setNotation(QDoubleValidator.StandardNotation)
+            editor.setValidator(validator)
+            editor.textEdited.connect(self._on_annotation_coord_edited)
+            self._annotation_coord_editors[key] = editor
+            layout.addWidget(editor)
+
+        self._annotation_coord_dirty = False
+        reset_btn = QPushButton("沿用全局", row)
+        reset_btn.setFixedHeight(26)
+        reset_btn.setToolTip("清除该标注文件的坐标变换覆盖。")
+        reset_btn.clicked.connect(self._reset_annotation_coord_editors)
+        layout.addWidget(reset_btn)
+        layout.addStretch()
         return row
+
+    def _on_annotation_file_changed(self) -> None:
+        self._sync_annotation_file_state()
+        self._reload_annotation_coord_editors()
+
+    def _on_annotation_coord_edited(self, _text: str) -> None:
+        self._annotation_coord_dirty = True
+
+    def _annotation_current_payload_path(self) -> str | None:
+        if self._annotation_file_combo is None:
+            return None
+        rel = config.normalize_annotation_file(self._annotation_file_combo.currentData())
+        if not rel:
+            return None
+        return config.resolve_app_path(rel)
+
+    def _reload_annotation_coord_editors(self) -> None:
+        editors = getattr(self, "_annotation_coord_editors", None)
+        if not editors:
+            return
+        defaults = {"scale_x": 1.0, "scale_y": 1.0, "offset_x": 0.0, "offset_y": 0.0}
+        path = self._annotation_current_payload_path()
+        payload = resource_metadata.read_json_payload(path) if path else None
+        explicit = resource_metadata.coord_transform_from_payload(payload)
+        values = explicit if explicit is not None else defaults
+        for key, editor in editors.items():
+            editor.blockSignals(True)
+            editor.setText(_format_coord_value(values.get(key, defaults[key])))
+            editor.blockSignals(False)
+        self._annotation_coord_dirty = False
+        self._annotation_coord_initial_explicit = explicit is not None
+
+    def _reset_annotation_coord_editors(self) -> None:
+        defaults = {"scale_x": 1.0, "scale_y": 1.0, "offset_x": 0.0, "offset_y": 0.0}
+        for key, editor in self._annotation_coord_editors.items():
+            editor.blockSignals(True)
+            editor.setText(_format_coord_value(defaults[key]))
+            editor.blockSignals(False)
+        self._annotation_coord_dirty = True
+        self._annotation_coord_pending_clear = True
 
     def _on_choose_annotation_file(self) -> None:
         selected, _selected_filter = QFileDialog.getOpenFileName(
@@ -2870,11 +2976,16 @@ class SettingsDialog(QDialog):
             left.addWidget(desc)
 
         editor = QLineEdit(str(getattr(config, field.key, "")))
-        editor.setMinimumHeight(28)
-        editor.setFixedWidth(32 if narrow_editor else 60)
-        if narrow_editor:
+        editor.setObjectName(f"SettingsField_{field.key}")
+        is_coord_field = field.key in _COORD_FIELD_KEYS
+        if is_coord_field:
+            _style_compact_coord_editor(editor, width=60)
+        else:
+            editor.setMinimumHeight(28)
+            editor.setFixedWidth(32 if narrow_editor else 60)
+            editor.setAlignment(Qt.AlignRight)
+        if narrow_editor and not is_coord_field:
             editor.setStyleSheet("padding: 5px;")
-        editor.setAlignment(Qt.AlignRight)
         if field.type_ is int:
             editor.setValidator(QIntValidator(-10_000_000, 10_000_000, editor))
         else:
@@ -3034,10 +3145,45 @@ class SettingsDialog(QDialog):
         except Exception as exc:
             styled_info(self, "保存失败", f"写入 config.json 失败：{exc}")
             return False
+        self._persist_annotation_coord_transform()
         self.applied.emit()
         for key, value in values.items():
             self._initial_values[key] = str(value)
         return True
+
+    def _persist_annotation_coord_transform(self) -> None:
+        if not getattr(self, "_annotation_coord_dirty", False):
+            return
+        editors = getattr(self, "_annotation_coord_editors", None)
+        if not editors:
+            return
+        path = self._annotation_current_payload_path()
+        if not path or not os.path.isfile(path):
+            return
+        defaults = {"scale_x": 1.0, "scale_y": 1.0, "offset_x": 0.0, "offset_y": 0.0}
+        transform: dict[str, float] = {}
+        for key, default in defaults.items():
+            text = editors[key].text().strip() if key in editors else ""
+            try:
+                transform[key] = float(text) if text else default
+            except ValueError:
+                transform[key] = default
+        try:
+            with open(path, "r", encoding="utf-8-sig") as handle:
+                payload = json.load(handle)
+        except (OSError, json.JSONDecodeError) as exc:
+            styled_info(self, "保存失败", f"读取标注文件失败：{exc}")
+            return
+        if not isinstance(payload, dict):
+            return
+        resource_metadata.apply_coord_transform_to_payload(payload, transform)
+        try:
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
+        except OSError as exc:
+            styled_info(self, "保存失败", f"写入标注文件失败：{exc}")
+            return
+        self._annotation_coord_dirty = False
 
     def _on_apply(self) -> None:
         values = self._collect()

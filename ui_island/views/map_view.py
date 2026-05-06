@@ -482,7 +482,11 @@ class MapView(QWidget):
         if not isinstance(point, dict):
             return None
         try:
-            x, y = self._coord_adapter.to_current(float(point["x"]), float(point["y"]))
+            adapter = self._coord_adapter
+            adapter_getter = getattr(self.route_mgr, "route_coordinate_adapter", None)
+            if callable(adapter_getter):
+                adapter = adapter_getter(route_id, self._coord_adapter) or self._coord_adapter
+            x, y = adapter.to_current(float(point["x"]), float(point["y"]))
             return int(x), int(y)
         except (KeyError, TypeError, ValueError):
             return None
@@ -666,7 +670,7 @@ class MapView(QWidget):
                     return
                 self._left_dragging = True
 
-            mapped = self._hover_map_pos
+            mapped = self._widget_to_map(event.position())
             if mapped is not None:
                 current = (int(mapped[0]), int(mapped[1]))
                 if current != self._route_point_drag_current_map:
