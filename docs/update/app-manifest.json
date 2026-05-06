@@ -5,7 +5,7 @@
   "app_status_message": "提示路线不兼容时，若你觉得坐标准确，可右键路线或分类栏目手动选择兼容；若你觉得坐标偏移，可右键路线或分类栏目手动校准坐标；本工具免费分享禁止二次倒卖，若你付费购买说明是被骗了；本工具免费分享禁止二次倒卖，若你付费购买说明是被骗了；",
   "app_notice_force_prompt": true,
   "min_supported_version": "0.1.6",
-  "min_supported_version_message": "本工具免费分享禁止二次倒卖，若你付费购买说明是被骗了；本工具免费分享禁止二次倒卖，若你付费购买说明是被骗了；后续会考虑启用机器码校验方案避免倒卖，请更新；",
+  "min_supported_version_message": "本工具免费分享禁止二次倒卖，若你付费购买说明是被骗了；本工具免费分享禁止二次倒卖，若你付费购买说明是被骗了；后续会考虑启用机器码校验方案避免倒卖，请更新；更新错误请先通过夸克网盘更新完整版",
   "requires_launcher_update": false,
   "prompt_update": true,
   "force_update_prompt": false,
