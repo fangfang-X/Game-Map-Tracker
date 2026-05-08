@@ -1158,6 +1158,7 @@ class SettingsDialog(QDialog):
         self._route_multi_color_checkbox: QCheckBox | None = None
         self._route_special_lines_follow_checkbox: QCheckBox | None = None
         self._route_strict_guide_checkbox: QCheckBox | None = None
+        self._route_sequential_guide_checkbox: QCheckBox | None = None
         self._route_node_order_visible_checkbox: QCheckBox | None = None
         self._route_guide_disable_node_drag_checkbox: QCheckBox | None = None
         self._window_lock_follows_guide_checkbox: QCheckBox | None = None
@@ -1626,6 +1627,27 @@ class SettingsDialog(QDialog):
         strict_checkbox.setToolTip("开启后靠近路线时优先指向该路线中排名最靠前的未到达节点。")
         self._route_strict_guide_checkbox = strict_checkbox
         toggle_layout.addWidget(strict_checkbox)
+
+        sequential_checkbox = QCheckBox("顺序指向模式")
+        sequential_checkbox.setChecked(bool(getattr(config, "ROUTE_SEQUENTIAL_GUIDE_MODE", False)))
+        sequential_checkbox.setToolTip("开启后始终指向路线中顺序下一个未到达的节点。")
+        self._route_sequential_guide_checkbox = sequential_checkbox
+        toggle_layout.addWidget(sequential_checkbox)
+
+        def _on_strict_toggled(checked):
+            if checked and self._route_sequential_guide_checkbox is not None:
+                self._route_sequential_guide_checkbox.blockSignals(True)
+                self._route_sequential_guide_checkbox.setChecked(False)
+                self._route_sequential_guide_checkbox.blockSignals(False)
+
+        def _on_sequential_toggled(checked):
+            if checked and self._route_strict_guide_checkbox is not None:
+                self._route_strict_guide_checkbox.blockSignals(True)
+                self._route_strict_guide_checkbox.setChecked(False)
+                self._route_strict_guide_checkbox.blockSignals(False)
+
+        strict_checkbox.toggled.connect(_on_strict_toggled)
+        sequential_checkbox.toggled.connect(_on_sequential_toggled)
 
         toggle_layout.addStretch()
         layout.addWidget(toggle_row)
@@ -3109,6 +3131,8 @@ class SettingsDialog(QDialog):
             result["ROUTE_SPECIAL_LINES_FOLLOW_ROUTE_COLOR"] = self._route_special_lines_follow_checkbox.isChecked()
         if self._route_strict_guide_checkbox is not None:
             result["ROUTE_STRICT_GUIDE_MODE"] = self._route_strict_guide_checkbox.isChecked()
+        if self._route_sequential_guide_checkbox is not None:
+            result["ROUTE_SEQUENTIAL_GUIDE_MODE"] = self._route_sequential_guide_checkbox.isChecked()
         if self._annotation_panel_follow_checkbox is not None:
             result["ANNOTATION_PANEL_FOLLOW_WINDOW"] = self._annotation_panel_follow_checkbox.isChecked()
         if self._route_node_order_visible_checkbox is not None:
@@ -3295,6 +3319,10 @@ class SettingsDialog(QDialog):
         if self._route_strict_guide_checkbox is not None:
             self._route_strict_guide_checkbox.setChecked(
                 bool(config.DEFAULT_CONFIG.get("ROUTE_STRICT_GUIDE_MODE", False))
+            )
+        if self._route_sequential_guide_checkbox is not None:
+            self._route_sequential_guide_checkbox.setChecked(
+                bool(config.DEFAULT_CONFIG.get("ROUTE_SEQUENTIAL_GUIDE_MODE", False))
             )
         if self._annotation_panel_follow_checkbox is not None:
             self._annotation_panel_follow_checkbox.setChecked(

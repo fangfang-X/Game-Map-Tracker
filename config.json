@@ -2,21 +2,21 @@
     "CONFIG_VERSION": 5,
     "MINIMAP": {},
     "WINDOW_GEOMETRY": {
-        "x": 1097,
-        "y": 106,
-        "width": 713,
+        "x": 1040,
+        "y": 87,
+        "width": 612,
         "height": 410
     },
     "LOCKED_VIEW_SIZE": {
-        "width": 357,
-        "height": 314
+        "width": 538,
+        "height": 318
     },
     "PAUSED_VIEW_SIZE": {
-        "width": 713,
+        "width": 612,
         "height": 410
     },
-    "SIDEBAR_COLLAPSED": true,
-    "SIDEBAR_WIDTH": 231,
+    "SIDEBAR_COLLAPSED": false,
+    "SIDEBAR_WIDTH": 247,
     "PAUSED_SIDEBAR_WIDTH": 231,
     "VIEW_SIZE": 400,
     "MAP_FILE": "maps/卡洛西亚大陆/big_map_new.png",
@@ -41,6 +41,7 @@
     "ROUTE_POINTER_ARROW_VISIBLE": true,
     "ROUTE_SPECIAL_LINES_FOLLOW_ROUTE_COLOR": false,
     "ROUTE_STRICT_GUIDE_MODE": false,
+    "ROUTE_SEQUENTIAL_GUIDE_MODE": false,
     "TOGGLE_LOCK_HOTKEY": {
         "sequence": "Alt+`",
         "label": "Alt+`",
@@ -69,8 +70,24 @@
             "key": "3",
             "vk": 51
         },
-        "start_navigation": null,
-        "terminate_navigation": null,
+        "start_navigation": {
+            "sequence": "Alt+1",
+            "label": "Alt+1",
+            "modifiers": [
+                "Alt"
+            ],
+            "key": "1",
+            "vk": 49
+        },
+        "terminate_navigation": {
+            "sequence": "Alt+2",
+            "label": "Alt+2",
+            "modifiers": [
+                "Alt"
+            ],
+            "key": "2",
+            "vk": 50
+        },
         "jump_current_route_node": {
             "sequence": "Ctrl+4",
             "label": "Ctrl+4",

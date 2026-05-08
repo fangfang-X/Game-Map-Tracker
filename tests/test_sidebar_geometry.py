@@ -141,6 +141,54 @@ class _FakeWindow:
         pass
 
 
+class _RoutePanelController:
+    def position_route_drawing_toolbar(self) -> None:
+        pass
+
+
+class _PureModeTransitionWindow:
+    def __init__(self, saved_pure_height: int, pure_offset: int, normal_offset: int) -> None:
+        self._geometry = QRect(100, 10, 420, 500)
+        self._mode = _Mode.PAUSED
+        self._window_margin = 0
+        self._normal_minimum_width = 420
+        self._normal_minimum_height = 300
+        self._pure_navigation_minimum_height = 120
+        self.minimum_width = self._normal_minimum_width
+        self._sidebar_width = 270
+        self._paused_sidebar_width = 270
+        self._sidebar_collapsed = False
+        self._sidebar_collapsed_before_pause = False
+        self._sidebar_width_before_pause = 270
+        self._sidebar_collapsed_before_max = None
+        self._sidebar_width_before_max = None
+        self._sidebar_expand_restore_geometry = None
+        self._applying_mode = False
+        self._preferred_right_edge = None
+        self._size_prefs = {
+            _Mode.PAUSED: (820, 500),
+            _Mode.TRACKING_STABLE: (420, saved_pure_height + pure_offset),
+        }
+        self.pure_layout_applied = False
+        self.geometry_applications: list[tuple[tuple[int, int], bool]] = []
+        self.mode_ui_applications: list[bool] = []
+        self._pure_offset = pure_offset
+        self._normal_offset = normal_offset
+        self.route_panel_controller = _RoutePanelController()
+
+    def _is_pure_navigation_active(self) -> bool:
+        return self._mode in (_Mode.TRACKING_STABLE, _Mode.TRACKING_INERTIAL)
+
+    def _apply_pure_navigation_ui(self) -> None:
+        self.pure_layout_applied = True
+
+    def geometry(self) -> QRect:
+        return QRect(self._geometry)
+
+    def isMaximized(self) -> bool:
+        return False
+
+
 class SidebarGeometryTests(unittest.TestCase):
     def test_dragging_sidebar_wider_keeps_tracking_window_geometry(self) -> None:
         window = _FakeWindow(QRect(480, 10, 520, 400), sidebar_width=220, collapsed=False)
@@ -206,6 +254,32 @@ class SidebarGeometryTests(unittest.TestCase):
         window.window_mode_controller.apply_sidebar_state()
 
         self.assertEqual(window.minimum_width, window.window_mode_controller.width_for_sidebar_width(300))
+
+    def test_starting_pure_navigation_restores_height_after_pure_layout_applies(self) -> None:
+        saved_pure_height = 310
+        window = _PureModeTransitionWindow(
+            saved_pure_height=saved_pure_height,
+            pure_offset=50,
+            normal_offset=90,
+        )
+        controller = WindowModeController(window)
+        controller.current_screen_available_geometry = lambda: QRect(0, 0, 1200, 800)
+        controller.apply_sidebar_state = lambda: None
+        controller.schedule_layout_refresh = lambda: None
+        controller.apply_mode_ui = (
+            lambda _new_mode, _old_mode, _tracking_modes: window.mode_ui_applications.append(window.pure_layout_applied)
+        )
+        controller.pure_height_from_normal = (
+            lambda normal_h: int(normal_h) - (window._pure_offset if window.pure_layout_applied else window._normal_offset)
+        )
+        controller.apply_geometry_for_mode = (
+            lambda size: window.geometry_applications.append((tuple(size), window.pure_layout_applied))
+        )
+
+        controller.enter_mode(_Mode.TRACKING_STABLE)
+
+        self.assertEqual(window.geometry_applications, [((420, saved_pure_height), True)])
+        self.assertEqual(window.mode_ui_applications, [True])
 
 
 if __name__ == "__main__":

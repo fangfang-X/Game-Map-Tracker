@@ -37,6 +37,7 @@ DEFAULT_CONFIG = {
     "ROUTE_POINTER_ARROW_VISIBLE": True,
     "ROUTE_SPECIAL_LINES_FOLLOW_ROUTE_COLOR": False,
     "ROUTE_STRICT_GUIDE_MODE": False,
+    "ROUTE_SEQUENTIAL_GUIDE_MODE": False,
     "TOGGLE_LOCK_HOTKEY": {
         "sequence": "Alt+`",
         "label": "Alt+`",

@@ -71,6 +71,7 @@ class ConfigMergeTests(unittest.TestCase):
         self.assertEqual(merged["ROUTE_POINTER_ARROW_VISIBLE"], True)
         self.assertEqual(merged["ROUTE_SPECIAL_LINES_FOLLOW_ROUTE_COLOR"], False)
         self.assertEqual(merged["ROUTE_STRICT_GUIDE_MODE"], False)
+        self.assertEqual(merged["ROUTE_SEQUENTIAL_GUIDE_MODE"], False)
         self.assertEqual(merged["ROUTE_VISITED_POINT_OPACITY"], 1.0)
         self.assertEqual(merged["ROUTE_VISITED_ICON_OPACITY"], 0.35)
         self.assertEqual(merged["WINDOW_LOCKED_OPACITY"], 0.78)
@@ -86,6 +87,7 @@ class ConfigMergeTests(unittest.TestCase):
             "ROUTE_POINTER_ARROW_VISIBLE": False,
             "ROUTE_SPECIAL_LINES_FOLLOW_ROUTE_COLOR": True,
             "ROUTE_STRICT_GUIDE_MODE": True,
+            "ROUTE_SEQUENTIAL_GUIDE_MODE": True,
         }
         merged, repaired = config.merge_config_payload(config.DEFAULT_CONFIG, user)
 
@@ -98,6 +100,7 @@ class ConfigMergeTests(unittest.TestCase):
         self.assertEqual(merged["ROUTE_POINTER_ARROW_VISIBLE"], False)
         self.assertEqual(merged["ROUTE_SPECIAL_LINES_FOLLOW_ROUTE_COLOR"], True)
         self.assertEqual(merged["ROUTE_STRICT_GUIDE_MODE"], True)
+        self.assertEqual(merged["ROUTE_SEQUENTIAL_GUIDE_MODE"], True)
 
         user = {
             "CONFIG_VERSION": 2,
@@ -109,6 +112,7 @@ class ConfigMergeTests(unittest.TestCase):
             "ROUTE_POINTER_ARROW_VISIBLE": "no",
             "ROUTE_SPECIAL_LINES_FOLLOW_ROUTE_COLOR": "yes",
             "ROUTE_STRICT_GUIDE_MODE": "yes",
+            "ROUTE_SEQUENTIAL_GUIDE_MODE": "yes",
         }
         merged, repaired = config.merge_config_payload(config.DEFAULT_CONFIG, user)
 
@@ -128,6 +132,7 @@ class ConfigMergeTests(unittest.TestCase):
         self.assertIn("ROUTE_POINTER_ARROW_VISIBLE", repaired)
         self.assertIn("ROUTE_SPECIAL_LINES_FOLLOW_ROUTE_COLOR", repaired)
         self.assertIn("ROUTE_STRICT_GUIDE_MODE", repaired)
+        self.assertIn("ROUTE_SEQUENTIAL_GUIDE_MODE", repaired)
 
         user = {
             "CONFIG_VERSION": 2,

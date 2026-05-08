@@ -231,7 +231,7 @@ class ElidedCheckBox(QCheckBox):
 
     def _refresh_elided_text(self) -> None:
         metrics = QFontMetrics(self.font())
-        available_width = max(60, self.width() - 24)
+        available_width = max(60, self.width() - 32)
         super().setText(metrics.elidedText(self._full_text, Qt.ElideRight, available_width))
 
 
@@ -258,7 +258,7 @@ class RouteListItem(QWidget):
         display_layout.setContentsMargins(0, 0, 0, 0)
         display_layout.setSpacing(6)
 
-        self.checkbox = QCheckBox(route_name, self.display_row)
+        self.checkbox = ElidedCheckBox(route_name, self.display_row)
         self.checkbox.setMinimumHeight(tokens.RECENT_ROUTE_ITEM_HEIGHT)
         self.checkbox.setChecked(checked)
         self.checkbox.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
@@ -335,20 +335,10 @@ class RouteListItem(QWidget):
     def update_route_name(self, route_name: str) -> None:
         self.route_name = route_name
         self.rename_input.setText(route_name)
-        self._refresh_display_name()
+        self.checkbox.set_full_text(route_name)
         self.setToolTip(self.route_name)
         self.display_row.setToolTip(self.route_name)
         self.checkbox.setToolTip(self.route_name)
-
-    def resizeEvent(self, event) -> None:
-        super().resizeEvent(event)
-        self._refresh_display_name()
-
-    def _refresh_display_name(self) -> None:
-        metrics = QFontMetrics(self.checkbox.font())
-        available_width = max(60, self.checkbox.width() - 28)
-        display_name = metrics.elidedText(self.route_name, Qt.ElideRight, available_width)
-        self.checkbox.setText(display_name)
 
     def minimumSizeHint(self):
         hint = super().minimumSizeHint()

@@ -473,11 +473,16 @@ class WindowModeController:
 
                 self.apply_sidebar_state()
 
+                pure_active = getattr(self.window, "_is_pure_navigation_active", None)
+                if old_mode == mode_enum.PAUSED and new_mode in stable_family and callable(pure_active) and pure_active():
+                    apply_pure_navigation_ui = getattr(self.window, "_apply_pure_navigation_ui", None)
+                    if callable(apply_pure_navigation_ui):
+                        apply_pure_navigation_ui()
+
                 same_family_shift = old_mode in stable_family and new_mode in stable_family
                 if not same_family_shift:
                     self.apply_geometry_for_mode(self.size_for_mode(new_mode))
                 else:
-                    pure_active = getattr(self.window, "_is_pure_navigation_active", None)
                     if callable(pure_active) and pure_active():
                         self.sync_pure_navigation_minimum_height()
                         self.window.setMinimumHeight(self.window._pure_navigation_minimum_height)

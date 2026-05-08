@@ -144,6 +144,10 @@ def _strict_guide_mode() -> bool:
     return bool(getattr(config, "ROUTE_STRICT_GUIDE_MODE", False))
 
 
+def _sequential_guide_mode() -> bool:
+    return bool(getattr(config, "ROUTE_SEQUENTIAL_GUIDE_MODE", False))
+
+
 def _line_color_for_style(style: str, route_color: tuple[int, int, int]) -> tuple[int, int, int]:
     if style == NODE_TYPE_TELEPORT:
         if _special_lines_follow_route_color():
@@ -728,6 +732,45 @@ def _first_unvisited_node(route: dict, player_xy: tuple[float, float]) -> tuple[
     return None
 
 
+def _last_visited_index_in_route(route: dict) -> int:
+    last_index = -1
+    for index, point in enumerate(route.get("points") or []):
+        if point.get("visited", False):
+            last_index = index
+    return last_index
+
+
+def _nearest_segment_on_route(route: dict, player_xy: tuple[float, float]) -> tuple[float, int, int, tuple[float, float], tuple[float, float], tuple[float, float]] | None:
+    points = route.get("points") or []
+    best: tuple[float, int, int, tuple[float, float], tuple[float, float], tuple[float, float]] | None = None
+    best_dist = float("inf")
+    for start_index, end_index, start, end in _iter_route_segments(points, bool(route.get("loop"))):
+        start_xy = _point_xy(start)
+        end_xy = _point_xy(end)
+        if start_xy is None or end_xy is None:
+            continue
+        dist, projection = _distance_to_segment(player_xy, start_xy, end_xy)
+        if dist < best_dist:
+            best_dist = dist
+            best = (dist, start_index, end_index, start_xy, end_xy, projection)
+    return best
+
+
+def _nearest_route_to_player(routes: list[dict], player_xy: tuple[float, float]) -> dict | None:
+    best_route: dict | None = None
+    best_dist = float("inf")
+    for route in routes:
+        for point in route.get("points") or []:
+            xy = _point_xy(point)
+            if xy is None:
+                continue
+            dist = math.hypot(xy[0] - player_xy[0], xy[1] - player_xy[1])
+            if dist < best_dist:
+                best_dist = dist
+                best_route = route
+    return best_route
+
+
 def _segment_length_between(points: list[dict], start_index: int, end_index: int) -> float:
     start_xy = _point_xy(points[start_index])
     end_xy = _point_xy(points[end_index])
@@ -808,8 +851,39 @@ def _guide_target_for_player(
     node_distance: float,
     segment_distance: float,
     strict_mode: bool = False,
+    sequential_mode: bool = False,
 ) -> _GuideTarget | None:
     route_list = list(routes)
+
+    if sequential_mode:
+        nearest_route = _nearest_route_to_player(route_list, player_xy)
+        if nearest_route is None:
+            return None
+        last_visited_index = _last_visited_index_in_route(nearest_route)
+        next_index = last_visited_index + 1
+        points = nearest_route.get("points") or []
+        while next_index < len(points):
+            if not points[next_index].get("visited", False):
+                target_xy = _point_xy(points[next_index])
+                if target_xy is not None:
+                    target_distance = math.hypot(target_xy[0] - player_xy[0], target_xy[1] - player_xy[1])
+                    segment = _nearest_segment_on_route(nearest_route, player_xy)
+                    if segment is not None:
+                        dist, start_index, end_index, start_xy, end_xy, projection = segment
+                        if dist <= segment_distance:
+                            arrow_target = _strict_arrow_target_for_segment(
+                                nearest_route,
+                                start_index,
+                                end_index,
+                                next_index,
+                                start_xy,
+                                end_xy,
+                            )
+                            return _GuideTarget(target_xy, target_distance, projection, arrow_target)
+                    return _GuideTarget(target_xy, target_distance, player_xy, target_xy)
+            next_index += 1
+        return None
+
     nearest_node = _nearest_unvisited_node(route_list, player_xy)
     nearest_segment = _nearest_segment(route_list, player_xy, segment_distance)
 
@@ -1655,6 +1729,7 @@ class RouteManager:
             _config_int("ROUTE_GUIDE_NODE_DISTANCE", 80),
             _config_int("ROUTE_GUIDE_SEGMENT_DISTANCE", 35),
             _strict_guide_mode(),
+            _sequential_guide_mode(),
         )
         label = _guide_distance_label(
             target,
@@ -2869,6 +2944,7 @@ class RouteManager:
                 _config_int("ROUTE_GUIDE_NODE_DISTANCE", 80),
                 _config_int("ROUTE_GUIDE_SEGMENT_DISTANCE", 35),
                 _strict_guide_mode(),
+                _sequential_guide_mode(),
             )
             if target is not None and self.pointer_arrow_visible():
                 _draw_spaced_direction_arrows(
