@@ -1,19 +1,14 @@
 {
     "CONFIG_VERSION": 5,
-    "MINIMAP": {
-        "top": 57,
-        "left": 2294,
-        "width": 226,
-        "height": 226
-    },
+    "MINIMAP": {},
     "WINDOW_GEOMETRY": {
-        "x": 761,
-        "y": 85,
+        "x": 1097,
+        "y": 106,
         "width": 713,
         "height": 410
     },
     "LOCKED_VIEW_SIZE": {
-        "width": 542,
+        "width": 357,
         "height": 314
     },
     "PAUSED_VIEW_SIZE": {
@@ -29,6 +24,7 @@
     "MAX_LOST_FRAMES": 150,
     "SIFT_REFRESH_RATE": 30,
     "SIFT_CLAHE_LIMIT": 5.0,
+    "SIFT_MINIMAP_SIZE": 220,
     "SIFT_MATCH_RATIO": 0.8,
     "SIFT_MIN_MATCH_COUNT": 8,
     "SIFT_RANSAC_THRESHOLD": 5.0,
@@ -234,10 +230,27 @@
     "ANNOTATION_PANEL_MAXIMIZED_OFFSET": {},
     "ANNOTATION_PANEL_POSITION": {},
     "ANNOTATION_PANEL_MAXIMIZED_POSITION": {},
-    "APP_UPDATE_LAST_PROMPTED_VERSION": "0.1.5",
-    "APP_NOTICE_LAST_ACK_KEY": "69ef27e2f9ae4bccce7bd497703417812b79c515f5793ff5f6ab3c4a09b88ada",
+    "APP_UPDATE_LAST_PROMPTED_VERSION": "0.1.6",
+    "APP_NOTICE_LAST_ACK_KEY": "a4f9cfb374c34673846315de5d65ce40b9b2bad970d730f2836a316999ebe7d6",
+    "LICENSE_DATA": {
+        "exp": 1809686119,
+        "hw": "c301b21411cc"
+    },
     "COORD_SCALE_X": 1.0,
     "COORD_SCALE_Y": 1.0,
     "COORD_OFFSET_X": 0.0,
-    "COORD_OFFSET_Y": 0.0
+    "COORD_OFFSET_Y": 0.0,
+    "TRACKER_ENGINE": "fusion",
+    "FUSION_COLOR_GRID_SIZE": 64,
+    "FUSION_COLOR_H_BINS": 30,
+    "FUSION_COLOR_S_BINS": 32,
+    "FUSION_LOW_TEXTURE_THRESH": 10.0,
+    "FUSION_TEMPLATE_SCALES": [
+        0.9,
+        1.0,
+        1.1
+    ],
+    "FUSION_TEMPLATE_EDGE": false,
+    "FUSION_KALMAN_PROCESS_NOISE_POS": 5.0,
+    "FUSION_KALMAN_PROCESS_NOISE_VEL": 2.0
 }

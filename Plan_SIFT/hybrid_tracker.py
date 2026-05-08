@@ -55,8 +55,6 @@ LOCAL_VERIFY_TEMPLATE_MAX = 100
 LOCAL_VERIFY_PAD_PX = 50
 
 # 载入屏 / 全黑画面快筛阈值（保守，避免误伤海面）
-FRAME_VALID_MIN_EDGE_DENSITY = 0.012
-FRAME_VALID_MIN_STD = 8.0
 
 # SIFT LOST 时仍用速度推演撑住的最大帧数（超过则真清空状态）
 LOST_BLIND_PUSH_MAX_FRAMES = 30
@@ -172,12 +170,18 @@ class HybridTracker(BaseTracker):
                 sift_result.latency_ms,
             )
 
-        if distance > MAX_JUMP_DISTANCE_PX:
-            # 异常跳变：模板复核救场，否则不接受 raw 观测，走预测位置
+        dynamic_max_jump = MAX_JUMP_DISTANCE_PX + self._blind_push_frames * 3.0
+        dynamic_max_jump = min(300.0, dynamic_max_jump)
+
+        if distance > dynamic_max_jump:
+            # 异常跳变：模板复核，模板无纹理时仍信任 SIFT
             ref = predicted_xy if predicted_xy is not None else self._smooth_xy
             v_xy, v_conf = self._verify_locally(minimap_bgr, ref)
             if v_conf >= LOCAL_VERIFY_MIN_CONF and v_xy is not None:
                 observation = v_xy
+                reliable = True
+            elif v_conf >= 0.40:
+                observation = raw_xy
                 reliable = True
             else:
                 observation = predicted_xy if predicted_xy is not None else self._smooth_xy
@@ -222,11 +226,14 @@ class HybridTracker(BaseTracker):
     @staticmethod
     def _frame_is_loading_screen(minimap_bgr: np.ndarray) -> bool:
         gray = cv2.cvtColor(minimap_bgr, cv2.COLOR_BGR2GRAY)
-        if float(np.std(gray)) < FRAME_VALID_MIN_STD:
+        gs = float(np.std(gray))
+        if gs < 3.0:
+            return True
+        if gs < 8.0 and float(np.std(minimap_bgr)) < 8.0:
             return True
         edges = cv2.Canny(gray, 50, 150)
         edge_density = float(np.count_nonzero(edges)) / float(edges.size)
-        return edge_density < FRAME_VALID_MIN_EDGE_DENSITY
+        return edge_density < 0.005
 
     def _verify_locally(
         self,

@@ -41,8 +41,8 @@ _HIGH_CONF_INLIER_RATIO = 0.65
 _LARGE_JUMP_RADIUS_FACTOR = 1.8
 
 _STRICT_MATCH_RATIO_STEPS = (0.78, 0.86)
-_MINIMAP_SCALE_TARGET = 220
-_MINIMAP_MAX_SCALE = 2.0
+_MINIMAP_SCALE_TARGET = int(getattr(config, "SIFT_MINIMAP_SIZE", None) or 220)
+_MINIMAP_MAX_UPSCALE = 3.0
 _MINIMAP_CIRCLE_RATIO = 0.48
 _MINIMAP_CENTER_MASK_RATIO = 0.13  # 盖住玩家箭头与视野扇形根部（约 30 px @ 220 短边）
 _GLOBAL_RETRY_INTERVAL_FRAMES = 5
@@ -231,7 +231,8 @@ class SiftTracker(BaseTracker):
 
         self.map_height, self.map_width = self.logic_map_bgr.shape[:2]
 
-        self.clahe = cv2.createCLAHE(clipLimit=config.SIFT_CLAHE_LIMIT, tileGridSize=(8, 8))
+        self._clahe_mini = cv2.createCLAHE(clipLimit=config.SIFT_CLAHE_LIMIT, tileGridSize=(8, 8))
+        self._clahe_base = cv2.createCLAHE(clipLimit=config.SIFT_CLAHE_LIMIT, tileGridSize=(16, 16))
         self.sift = cv2.SIFT_create()
 
         self.kp_big, self.des_big = self._load_or_compute_base_descriptors()
@@ -293,7 +294,7 @@ class SiftTracker(BaseTracker):
             return keypoints, descriptors
 
         logic_gray = cv2.cvtColor(self.logic_map_bgr, cv2.COLOR_BGR2GRAY)
-        logic_gray = self.clahe.apply(logic_gray)
+        logic_gray = self._clahe_base.apply(logic_gray)
         keypoints, descriptors = self.sift.detectAndCompute(logic_gray, None)
         if descriptors is None:
             descriptors = np.empty((0, 128), dtype=np.float32)
@@ -454,10 +455,13 @@ class SiftTracker(BaseTracker):
         gray = cv2.cvtColor(minimap_bgr, cv2.COLOR_BGR2GRAY)
         short_side = min(gray.shape[:2])
         if 0 < short_side < _MINIMAP_SCALE_TARGET:
-            scale = min(_MINIMAP_MAX_SCALE, _MINIMAP_SCALE_TARGET / float(short_side))
+            scale = min(_MINIMAP_MAX_UPSCALE, _MINIMAP_SCALE_TARGET / float(short_side))
             gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        elif short_side > _MINIMAP_SCALE_TARGET + 10:
+            scale = _MINIMAP_SCALE_TARGET / float(short_side)
+            gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
 
-        gray = self.clahe.apply(gray)
+        gray = self._clahe_mini.apply(gray)
         return gray, self._minimap_feature_mask(gray.shape)
 
     @staticmethod
