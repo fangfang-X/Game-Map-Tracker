@@ -1,11 +1,11 @@
 {
   "version": "0.1.6",
-  "notes": "并入一位同学对算法的优化；增加手动校准坐标的功能，不依赖于路线转换功能；增加设置项：纯净导航（导航时不显示其他按钮）,放宽最小宽高限制；增加快捷键：重置视图、重定位、定位下个点、开始导航、终止导航；在当前追踪路线右侧增加清空所有进度按钮；更新错误请先通过夸克网盘更新完整版",
+  "notes": "20260508引入不同分辨率的适配优化、增加顺序指向模式（指向最近路线最后一个已访问节点的下个节点）、修复两个小概率的显示异常",
   "app_status": "notice",
   "app_status_message": "本工具不涉及游戏内存读写与控制鼠标键盘的输入输出，仅通过观看玩家肉眼能看到的小地图内容进行优化体验；本工具免费分享仅供学习交流，禁止二次倒卖，禁止将本工具用于非法用途，使用本工具进行的行为与作者无关",
   "app_notice_force_prompt": true,
   "min_supported_version": "0.1.6",
-  "min_supported_version_message": "本工具免费分享禁止二次倒卖，若你付费购买说明是被骗了；本工具免费分享禁止倒卖，若你付费购买说明是被骗了；启用机器码校验方案避免倒卖，请更新；更新错误请先通过夸克网盘更新完整版",
+  "min_supported_version_message": "本工具免费分享禁止二次倒卖，若你付费购买说明是被骗了；启用机器码校验方案避免倒卖，请更新；更新错误请先通过夸克网盘更新完整版",
   "requires_launcher_update": false,
   "prompt_update": true,
   "force_update_prompt": false,
@@ -115,7 +115,7 @@
     {
       "path": "_internal/base_library.zip",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/_internal/base_library.zip",
-      "sha256": "105187ff308876c6290d087fb410cef4582fb4dc1d14846b0b62e761fc4585d1",
+      "sha256": "d324fb82d51d4fab145c243423cdb593c14a835699e794d48c0c9a43aa7e93a1",
       "size": 1388164
     },
     {
@@ -1609,15 +1609,15 @@
     {
       "path": "config.json",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/config.json",
-      "sha256": "05dbdd34a5cce870d5b823ed2f3b6091c0746982ffe410ab67b32596f6f0a867",
-      "size": 3405,
+      "sha256": "61eb0a789ef03b5a03d7aea4e7c634753f7abb60934a3e68610d054c2a3574b0",
+      "size": 3479,
       "install": "merge_config"
     },
     {
       "path": "GMT-N.exe",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/GMT-N.exe",
-      "sha256": "12a97cbe1b444a35a81f780ed78900b420ca3bc2069bd74e9f1a42a21ac8e631",
-      "size": 8897076
+      "sha256": "b9269e6108b4cc70e40fd24398410fc7998411af0895c66afe7cd74f688fc74a",
+      "size": 8899188
     },
     {
       "path": "maps/卡洛西亚大陆/big_map_new.png",
@@ -2138,8 +2138,8 @@
     {
       "path": "updater.exe",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/updater.exe",
-      "sha256": "de6df8c8cbe8cf492935cc7565b9a9d5ec9add7406d26455c59cac36c542f3ce",
-      "size": 8520508
+      "sha256": "2e394fc0cc515d3e3caeedc35ca6daf1a1fdaacc99aab1c99f9b9e2b0f6beb87",
+      "size": 8519070
     }
   ],
   "delete": [

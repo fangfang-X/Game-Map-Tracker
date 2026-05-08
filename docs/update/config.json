@@ -24,6 +24,7 @@
     "MAX_LOST_FRAMES": 30,
     "SIFT_REFRESH_RATE": 30,
     "SIFT_CLAHE_LIMIT": 3.0,
+    "SIFT_MINIMAP_SIZE": 220,
     "SIFT_MATCH_RATIO": 0.9,
     "SIFT_MIN_MATCH_COUNT": 5,
     "SIFT_RANSAC_THRESHOLD": 8.0,
@@ -40,6 +41,7 @@
     "ROUTE_POINTER_ARROW_VISIBLE": true,
     "ROUTE_SPECIAL_LINES_FOLLOW_ROUTE_COLOR": false,
     "ROUTE_STRICT_GUIDE_MODE": false,
+    "ROUTE_SEQUENTIAL_GUIDE_MODE": false,
     "TOGGLE_LOCK_HOTKEY": {
         "sequence": "Alt+`",
         "label": "Alt+`",
