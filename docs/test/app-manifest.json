@@ -1,11 +1,11 @@
 {
   "version": "0.1.6",
-  "notes": "测试推送",
+  "notes": "20260508引入不同分辨率的适配优化、增加顺序指向模式（指向最近路线最后一个已访问节点的下个节点）、修复两个小概率的显示异常",
   "app_status": "notice",
-  "app_status_message": "测试推送",
-  "app_notice_force_prompt": false,
-  "min_supported_version": "",
-  "min_supported_version_message": "",
+  "app_status_message": "本工具不涉及游戏内存读写与控制鼠标键盘的输入输出，仅通过观看玩家肉眼能看到的小地图内容进行优化体验；本工具免费分享仅供学习交流，禁止二次倒卖，禁止将本工具用于非法用途，使用本工具进行的行为与作者无关",
+  "app_notice_force_prompt": true,
+  "min_supported_version": "0.1.6",
+  "min_supported_version_message": "本工具免费分享禁止二次倒卖，若你付费购买说明是被骗了；启用机器码校验方案避免倒卖，请更新；更新错误请先通过夸克网盘更新完整版",
   "requires_launcher_update": false,
   "prompt_update": true,
   "force_update_prompt": false,
@@ -115,7 +115,7 @@
     {
       "path": "_internal/base_library.zip",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/test/_internal/base_library.zip",
-      "sha256": "8b696d7d667a3fb03cdfcd5a44fd56c7c11f35ee95361b5f9806660c5f93da00",
+      "sha256": "dc0b0bcbe75d8b606fbdad8ee0fe1f10019dfe786467efb9bf9aa14dcb92705d",
       "size": 1388164
     },
     {
@@ -1609,15 +1609,15 @@
     {
       "path": "config.json",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/test/config.json",
-      "sha256": "22965a370c19a07c7f9e98fe46d2817d89fd31e8ce1f2357d042ee9001dac9ca",
-      "size": 3380,
+      "sha256": "61eb0a789ef03b5a03d7aea4e7c634753f7abb60934a3e68610d054c2a3574b0",
+      "size": 3479,
       "install": "merge_config"
     },
     {
       "path": "GMT-N.exe",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/test/GMT-N.exe",
-      "sha256": "6b5deea369fdd4615ec83eae4699ab9212f40550d01965e4df8816c81c8ce203",
-      "size": 8886421
+      "sha256": "89411238ad6bc89a4fe2e8647e092c2d1fc5ec30b37213c9ed879e5957bb5b73",
+      "size": 8899188
     },
     {
       "path": "maps/卡洛西亚大陆/big_map_new.png",
@@ -2138,8 +2138,8 @@
     {
       "path": "updater.exe",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/test/updater.exe",
-      "sha256": "386bdaa9b752e5da3407f5bca033a64c081c18a54f3546a4d9935e9d1dfc05fd",
-      "size": 8520640
+      "sha256": "82168bc28f4dd10fbb5e6cc18d7d61d1d84d21f44268cb2ae067381b3c8c23cb",
+      "size": 8521982
     }
   ],
   "delete": [
@@ -2151,6 +2151,7 @@
   "runtime_config": {
     "QUARK_DOWNLOAD_URL": "https://pan.quark.cn/s/cf8e31fecd58?pwd=48wL",
     "ROUTE_RESOURCE_URL": "https://www.mapforge.top/",
+    "LICENSE_PUBLIC_KEY": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAs9BCbO+DN6SDhfXgRYPm\ncHqymg5VBZR+N+Rsfe7OohfDtqibsOjgjqWdGv6ooZkrbeIqTmOrT+tNxkvxDRzK\nplwk47qz+M3ZNAuEpUXgE36ER2dUZdwIBK2rkiX4SKxuAqskmSsBhzklMpZ1wdv+\nJYeiM0+PWx2rjJBncM2eRxEMXWEmiVXgzdMR/AQupEiAqTt1QiumpoWzoCpKoQUb\n6UkEGLHEND2UO7NZA/LVMenUmPcrewucy+ERBSvRlJEhjpy/LE9YEkvAqyw+SB+N\n4meDr2sFWAR33peiKBl37PoJo+/DyUzHr0EUsfpIqKsceT6BLRsPLKEEaf6Rt5Na\nvwIDAQAB\n-----END PUBLIC KEY-----",
     "ROUTE_RESOURCE_LINKS": [
       {
         "name": "地图工坊",
@@ -2175,12 +2176,26 @@
         "url": "https://qm.qq.com/q/TwoNlWoasg"
       }
     ],
+    "LICENSE_QQ_GROUPS": [
+      {
+        "name": "GMT-N交流QQ群",
+        "url": "https://qm.qq.com/q/TwoNlWoasg"
+      },
+      {
+        "name": "GMT-N交流QQ群2",
+        "url": "https://qm.qq.com/q/WBUJc3Et0u"
+      },
+      {
+        "name": "GMT-N交流QQ群3",
+        "url": "https://qm.qq.com/q/bJOiMwcCoS"
+      }
+    ],
     "APP_ENABLE_VERSIONS": [
       "GMT-N-0.1.5",
       "GMT-N-0.1.3",
       "sift2",
       "GMT-N-0.1.6"
     ],
-    "LICENSE_PUBLIC_KEY": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAs9BCbO+DN6SDhfXgRYPm\ncHqymg5VBZR+N+Rsfe7OohfDtqibsOjgjqWdGv6ooZkrbeIqTmOrT+tNxkvxDRzK\nplwk47qz+M3ZNAuEpUXgE36ER2dUZdwIBK2rkiX4SKxuAqskmSsBhzklMpZ1wdv+\nJYeiM0+PWx2rjJBncM2eRxEMXWEmiVXgzdMR/AQupEiAqTt1QiumpoWzoCpKoQUb\n6UkEGLHEND2UO7NZA/LVMenUmPcrewucy+ERBSvRlJEhjpy/LE9YEkvAqyw+SB+N\n4meDr2sFWAR33peiKBl37PoJo+/DyUzHr0EUsfpIqKsceT6BLRsPLKEEaf6Rt5Na\nvwIDAQAB\n-----END PUBLIC KEY-----"
+    "LICENSE_VERIFY_ENABLED": true
   }
 }
