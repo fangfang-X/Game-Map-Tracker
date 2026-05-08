@@ -1,8 +1,8 @@
 {
   "version": "0.1.6",
-  "notes": "20260508引入不同分辨率的适配优化、增加顺序指向模式（指向最近路线最后一个已访问节点的下个节点）、修复两个小概率的显示异常",
+  "notes": "20260508引入不同分辨率的适配优化、增加顺序指向模式（指向最近路线最后一个已访问节点的下个节点）、修复两个小概率的显示异常;机器码获取算法变更，会要求重新激活一次，正常现象",
   "app_status": "notice",
-  "app_status_message": "本工具不涉及游戏内存读写与控制鼠标键盘的输入输出，仅通过观看玩家肉眼能看到的小地图内容进行优化体验；本工具免费分享仅供学习交流，禁止二次倒卖，禁止将本工具用于非法用途，使用本工具进行的行为与作者无关",
+  "app_status_message": "本工具免费分享禁止二次倒卖，若你付费购买说明是被骗了；启用机器码校验方案避免倒卖，请更新；更新错误请先通过夸克网盘更新完整版",
   "app_notice_force_prompt": true,
   "min_supported_version": "0.1.6",
   "min_supported_version_message": "本工具免费分享禁止二次倒卖，若你付费购买说明是被骗了；启用机器码校验方案避免倒卖，请更新；更新错误请先通过夸克网盘更新完整版",
@@ -115,7 +115,7 @@
     {
       "path": "_internal/base_library.zip",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/_internal/base_library.zip",
-      "sha256": "d324fb82d51d4fab145c243423cdb593c14a835699e794d48c0c9a43aa7e93a1",
+      "sha256": "e43392c38e5fe6d9ac5ffaee1b2ae7a786c01ec34e0fa5f88ab4aadc8c1d32fb",
       "size": 1388164
     },
     {
@@ -1616,8 +1616,8 @@
     {
       "path": "GMT-N.exe",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/GMT-N.exe",
-      "sha256": "b9269e6108b4cc70e40fd24398410fc7998411af0895c66afe7cd74f688fc74a",
-      "size": 8899188
+      "sha256": "8be79512d69fe560d84d233c4d0e1d2697532ae2d32429eafaeb4a10640e1626",
+      "size": 8899851
     },
     {
       "path": "maps/卡洛西亚大陆/big_map_new.png",
@@ -2138,8 +2138,8 @@
     {
       "path": "updater.exe",
       "url": "https://gitee.com/qingjiao123/Game-Map-Tracker/raw/main/docs/update/updater.exe",
-      "sha256": "2e394fc0cc515d3e3caeedc35ca6daf1a1fdaacc99aab1c99f9b9e2b0f6beb87",
-      "size": 8519070
+      "sha256": "851fda179dfb177b3babfdc67aaf4f5f0d92f96f80c7fb5f664f41920a490f34",
+      "size": 8521375
     }
   ],
   "delete": [
