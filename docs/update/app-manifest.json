@@ -2196,6 +2196,6 @@
       "sift2",
       "GMT-N-0.1.6"
     ],
-    "LICENSE_VERIFY_ENABLED": true
+    "LICENSE_VERIFY_ENABLED": false
   }
 }
