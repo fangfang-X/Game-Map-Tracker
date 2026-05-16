@@ -2156,10 +2156,6 @@
       {
         "name": "地图工坊",
         "url": "https://www.mapforge.top/"
-      },
-      {
-        "name": "金山文档路线(需txt和json互转)",
-        "url": "https://www.kdocs.cn/wo/sl/v11cdiqU"
       }
     ],
     "FEEDBACK_LINKS": [
@@ -2172,22 +2168,18 @@
         "url": "https://docs.qq.com/sheet/DR0tiYnBwZ3B1UWJD?tab=BB08J2"
       },
       {
-        "name": "GMT-N交流QQ群",
-        "url": "https://qm.qq.com/q/TwoNlWoasg"
+        "name": "GMT-N交流QQ群4",
+        "url": "https://qm.qq.com/q/gk88NEl4hq"
       }
     ],
     "LICENSE_QQ_GROUPS": [
-      {
-        "name": "GMT-N交流QQ群",
-        "url": "https://qm.qq.com/q/TwoNlWoasg"
-      },
       {
         "name": "GMT-N交流QQ群2",
         "url": "https://qm.qq.com/q/WBUJc3Et0u"
       },
       {
-        "name": "GMT-N交流QQ群3",
-        "url": "https://qm.qq.com/q/bJOiMwcCoS"
+        "name": "GMT-N交流QQ群4",
+        "url": "https://qm.qq.com/q/gk88NEl4hq"
       }
     ],
     "APP_ENABLE_VERSIONS": [
@@ -2196,6 +2188,6 @@
       "sift2",
       "GMT-N-0.1.6"
     ],
-    "LICENSE_VERIFY_ENABLED": false
+    "LICENSE_VERIFY_ENABLED": true
   }
 }
